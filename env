@@ -1,0 +1,45 @@
+# Database
+DATABASE_URL="postgresql://user:password@localhost:5432/live_meeting?schema=public"
+
+# Server
+PORT=3001
+# LiveKit API (para iniciar Track Egress automaticamente)
+LIVEKIT_API_URL=http://localhost:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=devsecret12345678901234567890
+# Base para os endpoints WS de egress do backend (acessível pelo LiveKit)
+# Base para WS de egress (use host.docker.internal quando LiveKit estiver em Docker)
+EGRESS_WS_BASE=ws://host.docker.internal:3001
+
+# Media Egress Receivers
+# Directories to store media egress outputs
+# Audio: WAV (PCM s16le)
+EGRESS_AUDIO_OUTPUT_DIR=./storage/egress/audio
+# Video: encoded bytestream (.h264 or .ivf)
+EGRESS_VIDEO_OUTPUT_DIR=./storage/egress/video
+
+# Audio Pipeline / Hume
+# Grouping in seconds (default 5 - increased for better transcription performance)
+AUDIO_PIPELINE_GROUP_SECONDS=5
+# Preferred payload for WS streaming: wav
+AUDIO_PIPELINE_PAYLOAD=wav
+# Normalize volume before sending (true|false)
+AUDIO_PIPELINE_NORMALIZE=false
+# Hume WebSocket endpoint (real-time)
+HUME_WS_URL=wss://api.hume.ai/v0/stream/models
+# Hume API Key
+HUME_API_KEY=
+
+# Node Environment
+NODE_ENV=development
+
+# Text Analysis Service
+# Como o backend não está em Docker, usa localhost com a porta mapeada
+TEXT_ANALYSIS_SERVICE_URL=https://text-analysis-production.up.railway.app
+TEXT_ANALYSIS_ENABLED=true
+TEXT_ANALYSIS_TIMEOUT_MS=5000
+
+# Audio Transcription
+# Habilitar transcrição de áudio para texto (usa Whisper no serviço Python)
+AUDIO_TRANSCRIPTION_ENABLED=true
+

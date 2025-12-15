@@ -1,0 +1,81 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Example model - you can add your own models here
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum SessionStatus {
+  ACTIVE
+  ENDED
+}
+
+model Session {
+  id         String         @id @default(uuid())
+  meetingId  String         @unique
+  roomSid    String?        @unique
+  roomName   String
+  status     SessionStatus  @default(ACTIVE)
+  startedAt  DateTime       @default(now())
+  endedAt    DateTime?
+
+  @@index([roomName])
+}
+
+enum FeedbackSeverity {
+  info
+  warning
+  critical
+}
+
+enum FeedbackType {
+  volume_baixo
+  volume_alto
+  silencio_prolongado
+  tendencia_emocional_negativa
+  engajamento_baixo
+  overlap_fala
+  monologo_prolongado
+  frustracao_crescente
+  entusiasmo_alto
+  monotonia_prosodica
+  energia_grupo_baixa
+  interrupcoes_frequentes
+  polarizacao_emocional
+  efeito_pos_interrupcao
+  ritmo_acelerado
+  ritmo_pausado
+}
+
+model FeedbackEvent {
+  id             String            @id @default(uuid())
+  meetingId      String
+  participantId  String
+  type           FeedbackType
+  severity       FeedbackSeverity
+  ts             DateTime
+  windowStart    DateTime
+  windowEnd      DateTime
+  message        String
+  metadata       Json
+  createdAt      DateTime          @default(now())
+  expiresAt      DateTime?
+
+  @@index([meetingId, ts])
+  @@index([expiresAt])
+}
+
