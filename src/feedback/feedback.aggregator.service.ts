@@ -48,6 +48,101 @@ type ParticipantState = {
     sentiment_score?: number; // Score único
     urgency?: number;
     embedding?: number[];
+    /**
+     * Categoria de vendas detectada usando análise semântica com SBERT.
+     * 
+     * Categorias possíveis:
+     * - 'price_interest': Cliente demonstra interesse em saber o preço
+     * - 'value_exploration': Cliente explora o valor e benefícios da solução
+     * - 'objection_soft': Objeções leves, dúvidas ou hesitações
+     * - 'objection_hard': Objeções fortes e definitivas, rejeição clara
+     * - 'decision_signal': Sinais claros de que o cliente está pronto para decidir
+     * - 'information_gathering': Cliente busca informações adicionais
+     * - 'stalling': Cliente está protelando ou adiando a decisão
+     * - 'closing_readiness': Cliente demonstra prontidão para fechar o negócio
+     * 
+     * undefined se nenhuma categoria foi detectada com confiança suficiente ou se SBERT não estiver configurado.
+     */
+    sales_category?: string | null;
+    /**
+     * Confiança da classificação de categoria de vendas (0.0 a 1.0).
+     * 
+     * Calculada baseada na diferença entre a melhor categoria e a segunda melhor,
+     * considerando também o score absoluto da melhor categoria.
+     * 
+     * undefined se sales_category for undefined/null.
+     */
+    sales_category_confidence?: number | null;
+    /**
+     * Intensidade do sinal semântico (0.0 a 1.0).
+     * 
+     * Score absoluto da melhor categoria, diferente de confiança.
+     * Representa quão forte é o match semântico, independente da diferença
+     * entre categorias. Útil para diferenciar entre match fraco mas claro
+     * vs match forte.
+     * 
+     * undefined se sales_category for undefined/null.
+     */
+    sales_category_intensity?: number | null;
+    /**
+     * Ambiguidade semântica (0.0 a 1.0).
+     * 
+     * 0.0 = claro (uma categoria dominante)
+     * 1.0 = muito ambíguo (scores muito próximos entre categorias)
+     * 
+     * Calculado usando entropia normalizada dos scores.
+     * Textos ambíguos podem ter múltiplas interpretações válidas.
+     * 
+     * undefined se sales_category for undefined/null.
+     */
+    sales_category_ambiguity?: number | null;
+    /**
+     * Flags semânticas booleanas que facilitam heurísticas no backend.
+     * 
+     * Flags disponíveis:
+     * - price_window_open: True se há janela de oportunidade para falar sobre preço
+     * - decision_signal_strong: True se há sinal forte de que cliente está pronto para decidir
+     * - ready_to_close: True se cliente demonstra prontidão para fechar o negócio
+     * 
+     * undefined se sales_category for undefined/null ou se nenhuma flag estiver ativa.
+     */
+    sales_category_flags?: {
+      price_window_open?: boolean;
+      decision_signal_strong?: boolean;
+      ready_to_close?: boolean;
+    } | null;
+    /**
+     * Agregação temporal de categorias baseada em janela de contexto.
+     */
+    sales_category_aggregated?: {
+      dominant_category?: string;
+      category_distribution?: Record<string, number>;
+      stability?: number;
+      total_chunks?: number;
+      chunks_with_category?: number;
+    } | null;
+    /**
+     * Transição de categoria detectada baseada em histórico.
+     */
+    sales_category_transition?: {
+      transition_type?: 'advancing' | 'regressing' | 'lateral';
+      from_category?: string;
+      to_category?: string;
+      confidence?: number;
+      time_delta_ms?: number;
+      from_stage?: number;
+      to_stage?: number;
+      stage_difference?: number;
+    } | null;
+    /**
+     * Tendência semântica da conversa ao longo do tempo.
+     */
+    sales_category_trend?: {
+      trend?: 'advancing' | 'stable' | 'regressing';
+      trend_strength?: number;
+      current_stage?: number;
+      velocity?: number;
+    } | null;
   };
 };
 
@@ -318,6 +413,33 @@ export class FeedbackAggregatorService {
       this.byKey.set(key, state);
     }
 
+    // Log de sales_category antes de atualizar estado
+    if (evt.analysis.sales_category) {
+      const flagsInfo = evt.analysis.sales_category_flags
+        ? Object.entries(evt.analysis.sales_category_flags)
+            .filter(([, value]) => value === true)
+            .map(([key]) => key)
+            .join(', ')
+        : '';
+      
+      this.logger.log(
+        `💼 [SALES CATEGORY] Processing sales category: ${evt.analysis.sales_category}${flagsInfo ? ` [Flags: ${flagsInfo}]` : ''}`,
+        {
+          meetingId: evt.meetingId,
+          participantId: evt.participantId,
+          sales_category: evt.analysis.sales_category,
+          sales_category_confidence: evt.analysis.sales_category_confidence,
+          sales_category_intensity: evt.analysis.sales_category_intensity,
+          sales_category_ambiguity: evt.analysis.sales_category_ambiguity,
+          sales_category_flags: evt.analysis.sales_category_flags,
+          text_preview: evt.text.substring(0, 50),
+          sentiment: evt.analysis.sentiment,
+          intent: evt.analysis.intent,
+          topic: evt.analysis.topic,
+        },
+      );
+    }
+
     this.updateStateWithTextAnalysis(state, evt);
 
     // Re-executar pipeline A2E2 com dados combinados
@@ -327,6 +449,19 @@ export class FeedbackAggregatorService {
 
     if (feedback) {
       this.delivery.publishToHosts(evt.meetingId, feedback);
+    }
+
+    // ========================================================================
+    // HEURÍSTICAS DE FEEDBACK DE VENDAS (Baseadas em Sinais Semânticos)
+    // ========================================================================
+    // Gera feedbacks específicos para vendas baseados em:
+    // - Flags semânticas (price_window_open, decision_signal_strong, ready_to_close)
+    // - Transições de categoria (advancing, regressing)
+    // - Tendência semântica (advancing, stable, regressing)
+    // ========================================================================
+    const salesFeedback = this.generateSalesFeedback(state, evt, now);
+    if (salesFeedback) {
+      this.delivery.publishToHosts(evt.meetingId, salesFeedback);
     }
   }
 
@@ -355,25 +490,78 @@ export class FeedbackAggregatorService {
       sentiment_score: evt.analysis.sentiment_score,
       urgency: evt.analysis.urgency,
       embedding: evt.analysis.embedding,
+      // Categorias de vendas classificadas com SBERT
+      // Estes campos são opcionais e podem ser null se SBERT não estiver configurado
+      // ou se nenhuma categoria foi detectada com confiança suficiente
+      sales_category: evt.analysis.sales_category ?? undefined,
+      sales_category_confidence: evt.analysis.sales_category_confidence ?? undefined,
+      sales_category_intensity: evt.analysis.sales_category_intensity ?? undefined,
+      sales_category_ambiguity: evt.analysis.sales_category_ambiguity ?? undefined,
+      sales_category_flags: evt.analysis.sales_category_flags ?? undefined,
+      // Análises contextuais (baseadas em histórico)
+      sales_category_aggregated: evt.analysis.sales_category_aggregated ?? undefined,
+      sales_category_transition: evt.analysis.sales_category_transition ?? undefined,
+      sales_category_trend: evt.analysis.sales_category_trend ?? undefined,
     };
 
-    this.logger.debug(
-      `Updated text analysis for ${evt.meetingId}/${evt.participantId}`,
-      {
-        intent: evt.analysis.intent,
-        intent_confidence: evt.analysis.intent_confidence,
-        topic: evt.analysis.topic,
-        topic_confidence: evt.analysis.topic_confidence,
-        speech_act: evt.analysis.speech_act,
-        speech_act_confidence: evt.analysis.speech_act_confidence,
-        sentiment: evt.analysis.sentiment,
-        sentiment_score: evt.analysis.sentiment_score,
-        urgency: evt.analysis.urgency,
-        entities: evt.analysis.entities,
-        keywords: evt.analysis.keywords.slice(0, 5),
-        embedding_dim: evt.analysis.embedding.length,
-      },
-    );
+    // Log detalhado da atualização do estado
+    const logData: Record<string, unknown> = {
+      intent: evt.analysis.intent,
+      intent_confidence: evt.analysis.intent_confidence,
+      topic: evt.analysis.topic,
+      topic_confidence: evt.analysis.topic_confidence,
+      speech_act: evt.analysis.speech_act,
+      speech_act_confidence: evt.analysis.speech_act_confidence,
+      sentiment: evt.analysis.sentiment,
+      sentiment_score: evt.analysis.sentiment_score,
+      urgency: evt.analysis.urgency,
+      entities: evt.analysis.entities,
+      keywords: evt.analysis.keywords.slice(0, 5),
+      embedding_dim: evt.analysis.embedding.length,
+    };
+
+    // Adicionar sales_category ao log se presente (destacar visualmente)
+    if (evt.analysis.sales_category) {
+      logData.sales_category = evt.analysis.sales_category;
+      logData.sales_category_confidence = evt.analysis.sales_category_confidence;
+      logData.sales_category_intensity = evt.analysis.sales_category_intensity;
+      logData.sales_category_ambiguity = evt.analysis.sales_category_ambiguity;
+      logData.sales_category_flags = evt.analysis.sales_category_flags;
+      
+      // Construir mensagem detalhada com flags ativas
+      const flagsInfo = evt.analysis.sales_category_flags
+        ? Object.entries(evt.analysis.sales_category_flags)
+            .filter(([, value]) => value === true)
+            .map(([key]) => key)
+            .join(', ')
+        : '';
+      const flagsText = flagsInfo ? ` [Flags: ${flagsInfo}]` : '';
+      
+      // Log em nível INFO quando sales_category está presente (mais visível)
+      this.logger.log(
+        `✅ [TEXT ANALYSIS] Updated with sales category: ${evt.analysis.sales_category} (conf: ${(evt.analysis.sales_category_confidence ?? 0).toFixed(2)}, intensity: ${(evt.analysis.sales_category_intensity ?? 0).toFixed(2)}, ambiguity: ${(evt.analysis.sales_category_ambiguity ?? 0).toFixed(2)})${flagsText}`,
+        {
+          meetingId: evt.meetingId,
+          participantId: evt.participantId,
+          ...logData,
+        },
+      );
+    } else {
+      // Log em nível DEBUG quando sales_category não está presente
+      this.logger.debug(
+        `Updated text analysis for ${evt.meetingId}/${evt.participantId}`,
+        {
+          meetingId: evt.meetingId,
+          participantId: evt.participantId,
+          ...logData,
+          sales_category: null,
+          sales_category_confidence: null,
+          sales_category_intensity: null,
+          sales_category_ambiguity: null,
+          sales_category_flags: null,
+        },
+      );
+    }
   }
 
   private createDetectionContext(
@@ -1711,6 +1899,294 @@ export class FeedbackAggregatorService {
   private setCooldownMeeting(meetingId: string, type: string, now: number, ms: number): void {
     const key = `${meetingId}:${type}`;
     this.meetingCooldownByType.set(key, now + ms);
+  }
+
+  /**
+   * Verifica se deve gerar feedback de vendas baseado em sinais semânticos.
+   * 
+   * Critérios:
+   * - Cooldown global (30s)
+   * - Flags fortes sempre geram feedback
+   * - Consistência temporal mínima
+   * - Confiança e intensidade adequadas
+   * - Ambiguidade baixa
+   */
+  private shouldGenerateSalesFeedback(
+    state: ParticipantState,
+    evt: TextAnalysisResult,
+    now: number,
+  ): boolean {
+    const textAnalysis = state.textAnalysis;
+    if (!textAnalysis?.sales_category) {
+      return false;
+    }
+
+    // Verificar cooldown global (30 segundos)
+    if (this.inGlobalCooldown(state, now)) {
+      return false;
+    }
+
+    // Flags fortes sempre geram feedback (prioridade máxima)
+    const flags = textAnalysis.sales_category_flags;
+    if (flags) {
+      if (flags.price_window_open || flags.decision_signal_strong || flags.ready_to_close) {
+        return true;
+      }
+    }
+
+    // Verificar confiança e intensidade mínimas
+    const confidence = textAnalysis.sales_category_confidence ?? 0;
+    const intensity = textAnalysis.sales_category_intensity ?? 0;
+    if (confidence < 0.6 || intensity < 0.6) {
+      return false;
+    }
+
+    // Verificar ambiguidade (muito ambíguo = não gerar feedback)
+    const ambiguity = textAnalysis.sales_category_ambiguity ?? 1.0;
+    if (ambiguity > 0.7) {
+      return false;
+    }
+
+    // Verificar consistência temporal (se houver agregação)
+    const aggregated = textAnalysis.sales_category_aggregated;
+    if (aggregated) {
+      const stability = aggregated.stability ?? 0;
+      // Se histórico é muito instável (< 0.5), pode ser ruído
+      if (stability < 0.5 && confidence < 0.8) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Gera feedback de vendas baseado em sinais semânticos.
+   * 
+   * Heurísticas implementadas:
+   * 1. Janela de preço (price_window_open)
+   * 2. Sinal forte de decisão (decision_signal_strong)
+   * 3. Pronto para fechar (ready_to_close)
+   * 4. Objeção escalando (transição regressiva)
+   * 5. Conversa estagnada (tendência estável + stalling)
+   * 6. Transições importantes (advancing/regressing)
+   */
+  private generateSalesFeedback(
+    state: ParticipantState,
+    evt: TextAnalysisResult,
+    now: number,
+  ): FeedbackEventPayload | null {
+    if (!this.shouldGenerateSalesFeedback(state, evt, now)) {
+      return null;
+    }
+
+    const textAnalysis = state.textAnalysis;
+    if (!textAnalysis) {
+      return null;
+    }
+
+    const flags = textAnalysis.sales_category_flags;
+    const transition = textAnalysis.sales_category_transition;
+    const trend = textAnalysis.sales_category_trend;
+    const category = textAnalysis.sales_category;
+
+    // Heurística 1: Janela de oportunidade para preço
+    if (flags?.price_window_open && trend?.trend === 'advancing') {
+      const window = this.window(state, now, 30000); // Últimos 30s
+      return {
+        id: this.makeId(),
+        type: 'sales_price_window_open',
+        severity: 'info',
+        ts: now,
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        participantName: this.index.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+        window: { start: window.start, end: window.end },
+        message: 'Agora é o momento ideal para apresentar o preço',
+        tips: [
+          'Cliente demonstrou interesse consistente em saber o preço',
+          'Conversa progredindo positivamente',
+          'Confiança alta na classificação',
+          'Momento oportuno para discussão de valores',
+        ],
+        metadata: {
+          sales_category: category ?? undefined,
+          sales_category_confidence: textAnalysis.sales_category_confidence ?? undefined,
+          sales_category_intensity: textAnalysis.sales_category_intensity ?? undefined,
+        },
+      };
+    }
+
+    // Heurística 2: Sinal forte de decisão
+    if (flags?.decision_signal_strong) {
+      const window = this.window(state, now, 30000);
+      return {
+        id: this.makeId(),
+        type: 'sales_decision_signal',
+        severity: 'info',
+        ts: now,
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        participantName: this.index.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+        window: { start: window.start, end: window.end },
+        message: 'Cliente demonstra sinais claros de prontidão para decidir',
+        tips: [
+          'Múltiplos sinais de decisão detectados',
+          'Confiança muito alta na classificação',
+          'Considerar acelerar processo de fechamento',
+          'Apresentar próximos passos claramente',
+        ],
+        metadata: {
+          sales_category: category ?? undefined,
+          sales_category_confidence: textAnalysis.sales_category_confidence ?? undefined,
+        },
+      };
+    }
+
+    // Heurística 3: Pronto para fechar
+    if (flags?.ready_to_close && trend?.current_stage && trend.current_stage >= 4) {
+      const window = this.window(state, now, 30000);
+      return {
+        id: this.makeId(),
+        type: 'sales_ready_to_close',
+        severity: 'info',
+        ts: now,
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        participantName: this.index.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+        window: { start: window.start, end: window.end },
+        message: 'Cliente demonstra prontidão para fechar o negócio - acelerar processo',
+        tips: [
+          'Múltiplos sinais de fechamento detectados',
+          'Conversa progredindo consistentemente',
+          'Momento ideal para proposta final',
+          'Evitar adicionar complexidade desnecessária',
+        ],
+        metadata: {
+          sales_category: category ?? undefined,
+          sales_category_confidence: textAnalysis.sales_category_confidence ?? undefined,
+          current_stage: trend.current_stage,
+        },
+      };
+    }
+
+    // Heurística 4: Objeção escalando (transição regressiva)
+    if (
+      transition?.transition_type === 'regressing' &&
+      transition.from_category === 'objection_soft' &&
+      transition.to_category === 'objection_hard'
+    ) {
+      const window = this.window(state, now, 60000);
+      this.setCooldown(state, 'sales_objection_escalating', now, 60000); // Cooldown de 60s
+      return {
+        id: this.makeId(),
+        type: 'sales_objection_escalating',
+        severity: 'warning',
+        ts: now,
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        participantName: this.index.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+        window: { start: window.start, end: window.end },
+        message: 'Objeção do cliente está piorando - requer abordagem diferente',
+        tips: [
+          'Cliente regrediu de objeção leve para forte',
+          'Considerar mudança de estratégia imediata',
+          'Focar em entender preocupações específicas',
+          'Evitar ser defensivo ou insistente',
+        ],
+        metadata: {
+          from_category: transition.from_category,
+          to_category: transition.to_category,
+          transition_confidence: transition.confidence,
+        },
+      };
+    }
+
+    // Heurística 5: Conversa estagnada
+    if (
+      trend?.trend === 'stable' &&
+      trend.trend_strength &&
+      trend.trend_strength > 0.9 &&
+      category === 'stalling'
+    ) {
+      const window = this.window(state, now, 60000);
+      this.setCooldown(state, 'sales_conversation_stalling', now, 120000); // Cooldown de 2min
+      return {
+        id: this.makeId(),
+        type: 'sales_conversation_stalling',
+        severity: 'info',
+        ts: now,
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        participantName: this.index.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+        window: { start: window.start, end: window.end },
+        message: 'Conversa estagnada - considerar criar urgência',
+        tips: [
+          'Cliente protelando decisão consistentemente',
+          'Considerar oferecer incentivo ou deadline',
+          'Revisar valor proposto',
+          'Identificar bloqueadores específicos',
+        ],
+        metadata: {
+          sales_category: category,
+          trend_strength: trend.trend_strength,
+        },
+      };
+    }
+
+    // Heurística 6: Transição importante (advancing)
+    if (
+      transition?.transition_type === 'advancing' &&
+      transition.confidence &&
+      transition.confidence > 0.7 &&
+      transition.stage_difference &&
+      transition.stage_difference >= 2
+    ) {
+      const window = this.window(state, now, 30000);
+      this.setCooldown(state, 'sales_category_transition', now, 60000); // Cooldown de 60s
+      return {
+        id: this.makeId(),
+        type: 'sales_category_transition',
+        severity: 'info',
+        ts: now,
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        participantName: this.index.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+        window: { start: window.start, end: window.end },
+        message: `Cliente progrediu de ${this.getCategoryDisplayName(transition.from_category)} para ${this.getCategoryDisplayName(transition.to_category)}`,
+        tips: [
+          'Conversa avançando positivamente',
+          'Aproveitar momento de progresso',
+          'Manter momentum da conversa',
+        ],
+        metadata: {
+          from_category: transition.from_category,
+          to_category: transition.to_category,
+          transition_confidence: transition.confidence,
+          stage_difference: transition.stage_difference,
+        },
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Retorna nome amigável para categoria de vendas.
+   */
+  private getCategoryDisplayName(category: string | undefined | null): string {
+    if (!category) return 'desconhecida';
+    const names: Record<string, string> = {
+      price_interest: 'interesse em preço',
+      value_exploration: 'exploração de valor',
+      objection_soft: 'objeção leve',
+      objection_hard: 'objeção forte',
+      decision_signal: 'sinal de decisão',
+      information_gathering: 'coleta de informações',
+      stalling: 'protelando',
+      closing_readiness: 'pronto para fechar',
+    };
+    return names[category] || category;
   }
 
   // Debug/introspection

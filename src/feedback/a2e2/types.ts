@@ -51,6 +51,101 @@ export type ParticipantState = {
     sentiment_score?: number; // Score único
     urgency?: number;
     embedding?: number[];
+    /**
+     * Categoria de vendas detectada usando análise semântica com SBERT.
+     * 
+     * Categorias possíveis:
+     * - 'price_interest': Cliente demonstra interesse em saber o preço
+     * - 'value_exploration': Cliente explora o valor e benefícios da solução
+     * - 'objection_soft': Objeções leves, dúvidas ou hesitações
+     * - 'objection_hard': Objeções fortes e definitivas, rejeição clara
+     * - 'decision_signal': Sinais claros de que o cliente está pronto para decidir
+     * - 'information_gathering': Cliente busca informações adicionais
+     * - 'stalling': Cliente está protelando ou adiando a decisão
+     * - 'closing_readiness': Cliente demonstra prontidão para fechar o negócio
+     * 
+     * undefined se nenhuma categoria foi detectada com confiança suficiente ou se SBERT não estiver configurado.
+     */
+    sales_category?: string | null;
+    /**
+     * Confiança da classificação de categoria de vendas (0.0 a 1.0).
+     * 
+     * Calculada baseada na diferença entre a melhor categoria e a segunda melhor,
+     * considerando também o score absoluto da melhor categoria.
+     * 
+     * undefined se sales_category for undefined/null.
+     */
+    sales_category_confidence?: number | null;
+    /**
+     * Intensidade do sinal semântico (0.0 a 1.0).
+     * 
+     * Score absoluto da melhor categoria, diferente de confiança.
+     * Representa quão forte é o match semântico, independente da diferença
+     * entre categorias. Útil para diferenciar entre match fraco mas claro
+     * vs match forte.
+     * 
+     * undefined se sales_category for undefined/null.
+     */
+    sales_category_intensity?: number | null;
+    /**
+     * Ambiguidade semântica (0.0 a 1.0).
+     * 
+     * 0.0 = claro (uma categoria dominante)
+     * 1.0 = muito ambíguo (scores muito próximos entre categorias)
+     * 
+     * Calculado usando entropia normalizada dos scores.
+     * Textos ambíguos podem ter múltiplas interpretações válidas.
+     * 
+     * undefined se sales_category for undefined/null.
+     */
+    sales_category_ambiguity?: number | null;
+    /**
+     * Flags semânticas booleanas que facilitam heurísticas no backend.
+     * 
+     * Flags disponíveis:
+     * - price_window_open: True se há janela de oportunidade para falar sobre preço
+     * - decision_signal_strong: True se há sinal forte de que cliente está pronto para decidir
+     * - ready_to_close: True se cliente demonstra prontidão para fechar o negócio
+     * 
+     * undefined se sales_category for undefined/null ou se nenhuma flag estiver ativa.
+     */
+    sales_category_flags?: {
+      price_window_open?: boolean;
+      decision_signal_strong?: boolean;
+      ready_to_close?: boolean;
+    } | null;
+    /**
+     * Agregação temporal de categorias baseada em janela de contexto.
+     */
+    sales_category_aggregated?: {
+      dominant_category?: string;
+      category_distribution?: Record<string, number>;
+      stability?: number;
+      total_chunks?: number;
+      chunks_with_category?: number;
+    } | null;
+    /**
+     * Transição de categoria detectada baseada em histórico.
+     */
+    sales_category_transition?: {
+      transition_type?: 'advancing' | 'regressing' | 'lateral';
+      from_category?: string;
+      to_category?: string;
+      confidence?: number;
+      time_delta_ms?: number;
+      from_stage?: number;
+      to_stage?: number;
+      stage_difference?: number;
+    } | null;
+    /**
+     * Tendência semântica da conversa ao longo do tempo.
+     */
+    sales_category_trend?: {
+      trend?: 'advancing' | 'stable' | 'regressing';
+      trend_strength?: number;
+      current_stage?: number;
+      velocity?: number;
+    } | null;
   };
 };
 
