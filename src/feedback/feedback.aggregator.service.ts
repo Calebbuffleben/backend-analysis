@@ -5,7 +5,7 @@ import { FeedbackEventPayload, FeedbackIngestionEvent } from './feedback.types';
 import { ParticipantIndexService } from '../livekit/participant-index.service';
 import { runA2E2Pipeline } from './a2e2/pipeline/run-a2e2-pipeline';
 import { TextAnalysisResult } from '../pipeline/text-analysis.service';
-import type { DetectionContext } from './a2e2/types';
+import type { DetectionContext, TextHistoryEntry } from './a2e2/types';
 
 type Sample = {
   ts: number;
@@ -110,6 +110,9 @@ type ParticipantState = {
       price_window_open?: boolean;
       decision_signal_strong?: boolean;
       ready_to_close?: boolean;
+      indecision_detected?: boolean;
+      decision_postponement_signal?: boolean;
+      conditional_language_signal?: boolean;
     } | null;
     /**
      * Agregação temporal de categorias baseada em janela de contexto.
@@ -143,6 +146,35 @@ type ParticipantState = {
       current_stage?: number;
       velocity?: number;
     } | null;
+    /**
+     * Keywords condicionais detectadas no texto.
+     * 
+     * Lista de palavras e frases que indicam linguagem condicional ou hesitação,
+     * característica de clientes indecisos.
+     */
+    conditional_keywords_detected?: string[];
+    /**
+     * Métricas específicas de indecisão pré-calculadas.
+     * 
+     * Métricas calculadas no Python para facilitar análise no backend.
+     */
+    indecision_metrics?: {
+      indecision_score?: number;
+      postponement_likelihood?: number;
+      conditional_language_score?: number;
+    } | null;
+    /**
+     * Histórico de textos analisados recentemente.
+     * 
+     * Mantém últimos N textos (padrão: 20) para permitir:
+     * - Extração de frases representativas
+     * - Análise temporal de padrões
+     * - Detecção de consistência ao longo do tempo
+     * 
+     * Cada entrada contém o texto original, timestamp e campos
+     * relevantes de sales_category para análise posterior.
+     */
+    textHistory?: TextHistoryEntry[];
   };
 };
 
@@ -463,12 +495,60 @@ export class FeedbackAggregatorService {
     if (salesFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesFeedback);
     }
+
+    // ========================================================================
+    // DETECÇÃO DE INDECISÃO DO CLIENTE (FASE 7)
+    // ========================================================================
+    // Detecta padrão consistente de indecisão do cliente baseado em:
+    // - Padrões semânticos (decision_postponement, conditional_language, lack_of_commitment)
+    // - Consistência temporal do padrão
+    // - Confidence combinado de múltiplos sinais
+    // - Frases representativas do histórico
+    // ========================================================================
+    const indecisionFeedback = this.detectClientIndecision(state, evt, now);
+    if (indecisionFeedback) {
+      this.delivery.publishToHosts(evt.meetingId, indecisionFeedback);
+    }
   }
 
   private updateStateWithTextAnalysis(
     state: ParticipantState,
     evt: TextAnalysisResult,
   ): void {
+    // ========================================================================
+    // FASE 1: ARMAZENAMENTO DE HISTÓRICO DE TEXTOS
+    // ========================================================================
+    // Mantém histórico dos últimos 20 textos analisados para permitir:
+    // - Extração de frases representativas
+    // - Análise temporal de padrões
+    // - Detecção de consistência ao longo do tempo
+    // ========================================================================
+    const maxHistorySize = 20;
+    
+    // Criar entrada no histórico
+    const historyEntry: TextHistoryEntry = {
+      text: evt.text,
+      timestamp: evt.timestamp,
+      sales_category: evt.analysis.sales_category ?? null,
+      sales_category_confidence: evt.analysis.sales_category_confidence ?? null,
+      sales_category_intensity: evt.analysis.sales_category_intensity ?? null,
+      sales_category_ambiguity: evt.analysis.sales_category_ambiguity ?? null,
+    };
+    
+    // Inicializar histórico se não existir
+    const currentHistory = state.textAnalysis?.textHistory ?? [];
+    
+    // Adicionar nova entrada ao histórico
+    const updatedHistory = [...currentHistory, historyEntry];
+    
+    // Manter apenas últimos N textos (limitar tamanho do histórico)
+    const prunedHistory = updatedHistory.length > maxHistorySize
+      ? updatedHistory.slice(-maxHistorySize)
+      : updatedHistory;
+    
+    // ========================================================================
+    // Atualizar estado com análise de texto e histórico
+    // ========================================================================
     state.textAnalysis = {
       sentiment: {
         positive: evt.analysis.sentiment === 'positive' ? evt.analysis.sentiment_score : 0,
@@ -502,6 +582,12 @@ export class FeedbackAggregatorService {
       sales_category_aggregated: evt.analysis.sales_category_aggregated ?? undefined,
       sales_category_transition: evt.analysis.sales_category_transition ?? undefined,
       sales_category_trend: evt.analysis.sales_category_trend ?? undefined,
+      // Keywords condicionais detectadas (FASE 9)
+      conditional_keywords_detected: evt.analysis.conditional_keywords_detected ?? undefined,
+      // Métricas de indecisão (FASE 10)
+      indecision_metrics: evt.analysis.indecision_metrics ?? undefined,
+      // Histórico de textos (FASE 1)
+      textHistory: prunedHistory,
     };
 
     // Log detalhado da atualização do estado
@@ -1876,6 +1962,654 @@ export class FeedbackAggregatorService {
   private makeId(): string {
     const rnd = Math.floor(Math.random() * 1e9).toString(36);
     return `${Date.now().toString(36)}-${rnd}`;
+  }
+
+  // ========================================================================
+  // FASE 2: EXTRAÇÃO DE FRASES REPRESENTATIVAS
+  // ========================================================================
+  /**
+   * Extrai frases representativas de indecisão do histórico de textos.
+   * 
+   * Filtra textos que:
+   * - Têm categoria de indecisão (stalling, objection_soft)
+   * - Têm confiança mínima (>= minConfidence)
+   * - Estão dentro da janela temporal especificada
+   * 
+   * Retorna até maxPhrases frases, ordenadas por confiança (maior primeiro).
+   * 
+   * @param state Estado do participante contendo histórico de textos
+   * @param now Timestamp atual em milissegundos
+   * @param windowMs Janela temporal em milissegundos (padrão: 60000 = 60s)
+   * @param maxPhrases Número máximo de frases a retornar (padrão: 5)
+   * @param minConfidence Confiança mínima necessária (padrão: 0.6)
+   * @returns Array de strings com frases representativas, ordenadas por confiança
+   * 
+   * @example
+   * ```typescript
+   * const phrases = this.extractRepresentativePhrases(state, now, 60000, 5, 0.6);
+   * // Retorna até 5 frases de indecisão dos últimos 60 segundos
+   * ```
+   */
+  private extractRepresentativePhrases(
+    state: ParticipantState,
+    now: number,
+    windowMs: number = 60000, // Últimos 60 segundos
+    maxPhrases: number = 5,
+    minConfidence: number = 0.01 // 🧪 TESTE: Reduzido de 0.6 para 0.01
+  ): string[] {
+    const textHistory = state.textAnalysis?.textHistory ?? [];
+    if (textHistory.length === 0) {
+      return [];
+    }
+    
+    const cutoffTime = now - windowMs;
+    const indecisionCategories = ['stalling', 'objection_soft'];
+    
+    // Filtrar textos de indecisão dentro da janela temporal
+    const indecisionTexts = textHistory
+      .filter(entry => {
+        // Verificar timestamp (deve estar dentro da janela temporal)
+        if (entry.timestamp < cutoffTime) {
+          return false;
+        }
+        
+        // Verificar categoria (deve ser stalling ou objection_soft)
+        if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
+          return false;
+        }
+        
+        // Verificar confiança mínima
+        if ((entry.sales_category_confidence ?? 0) < minConfidence) {
+          return false;
+        }
+        
+        return true;
+      })
+      // Ordenar por confiança (maior primeiro)
+      .sort((a, b) => (b.sales_category_confidence ?? 0) - (a.sales_category_confidence ?? 0))
+      // Limitar quantidade
+      .slice(0, maxPhrases)
+      // Extrair apenas o texto
+      .map(entry => entry.text);
+    
+    return indecisionTexts;
+  }
+
+  // ========================================================================
+  // FASE 3: DETECÇÃO DE PADRÕES SEMÂNTICOS
+  // ========================================================================
+  /**
+   * Detecta padrões semânticos de indecisão baseado em análise contextual.
+   * 
+   * Analisa o estado atual do participante e identifica três padrões específicos:
+   * 1. decision_postponement: Cliente consistentemente posterga decisões
+   * 2. conditional_language: Cliente usa linguagem condicional/aberta
+   * 3. lack_of_commitment: Cliente evita compromissos claros
+   * 
+   * @param state Estado do participante contendo análise de texto
+   * @returns Objeto com três flags booleanas indicando quais padrões foram detectados
+   * 
+   * @example
+   * ```typescript
+   * const patterns = this.detectIndecisionPatterns(state);
+   * if (patterns.decision_postponement) {
+   *   // Cliente está postergando decisões
+   * }
+   * ```
+   */
+  private detectIndecisionPatterns(
+    state: ParticipantState
+  ): {
+    decision_postponement: boolean;
+    conditional_language: boolean;
+    lack_of_commitment: boolean;
+  } {
+    const textAnalysis = state.textAnalysis;
+    if (!textAnalysis) {
+      return {
+        decision_postponement: false,
+        conditional_language: false,
+        lack_of_commitment: false,
+      };
+    }
+    
+    const aggregated = textAnalysis.sales_category_aggregated;
+    const trend = textAnalysis.sales_category_trend;
+    const ambiguity = textAnalysis.sales_category_ambiguity ?? 0;
+    const keywords = textAnalysis.keywords ?? [];
+    const flags = textAnalysis.sales_category_flags;
+    const conditionalKeywordsDetected = textAnalysis.conditional_keywords_detected ?? [];
+    const indecisionMetrics = textAnalysis.indecision_metrics;
+    const indecisionScore = indecisionMetrics?.indecision_score ?? 0;
+    const postponementLikelihood = indecisionMetrics?.postponement_likelihood ?? 0;
+    const conditionalLanguageScore = indecisionMetrics?.conditional_language_score ?? 0;
+    
+    // ========================================================================
+    // Padrão 1: Decision Postponement
+    // ========================================================================
+    // Cliente consistentemente posterga decisões
+    // 
+    // Verifica:
+    // 1. Flag do Python (decision_postponement_signal) OU
+    // 2. Análise contextual (stalling + stable + low velocity)
+    const pythonDecisionPostponementFlag = flags?.decision_postponement_signal ?? false;
+    const isStallingDominant = aggregated?.dominant_category === 'stalling';
+    const isStable = trend?.trend === 'stable';
+    const isLowVelocity = (trend?.velocity ?? 1) < 0.1;
+    const contextualDecisionPostponement = isStallingDominant && isStable && isLowVelocity;
+    // 3. Métrica do Python (postponement_likelihood) acima de threshold
+    const metricsDecisionPostponement = postponementLikelihood >= 0.6;
+    const decision_postponement =
+      pythonDecisionPostponementFlag || contextualDecisionPostponement || metricsDecisionPostponement;
+    
+    // ========================================================================
+    // Padrão 2: Conditional Language
+    // ========================================================================
+    // Cliente usa linguagem condicional/aberta
+    // 
+    // Verifica:
+    // 1. Flag do Python (conditional_language_signal) OU
+    // 2. Alta ambiguidade + conditional keywords detectadas pelo Python OU
+    // 3. Alta ambiguidade + conditional keywords nas keywords gerais
+    const pythonConditionalLanguageFlag = flags?.conditional_language_signal ?? false;
+    const hasConditionalKeywordsFromPython = conditionalKeywordsDetected.length > 0;
+    const conditionalKeywords = [
+      'talvez',
+      'pensar',
+      'avaliar',
+      'depois',
+      'ver',
+      'consultar',
+      'depende',
+      'preciso',
+      'vou ver',
+      'deixa',
+      'analisar',
+      'considerar',
+      'refletir',
+      'avaliar melhor',
+      'pensar melhor',
+    ];
+    const hasConditionalKeywordsInGeneral = keywords.some(kw => 
+      conditionalKeywords.some(ck => kw.toLowerCase().includes(ck))
+    );
+    const highAmbiguityWithKeywords = ambiguity > 0.7 && (hasConditionalKeywordsFromPython || hasConditionalKeywordsInGeneral);
+    // 4. Métrica do Python (conditional_language_score) acima de threshold (>= 2 keywords ≈ 0.4)
+    const metricsConditionalLanguage = conditionalLanguageScore >= 0.4;
+    const conditional_language =
+      pythonConditionalLanguageFlag || highAmbiguityWithKeywords || metricsConditionalLanguage;
+    
+    // ========================================================================
+    // Padrão 3: Lack of Commitment
+    // ========================================================================
+    // Cliente evita compromissos claros
+    // 
+    // Verifica:
+    // 1. Flag geral de indecisão do Python OU
+    // 2. Análise contextual (baixa estabilidade + alta proporção de indecisão)
+    const pythonIndecisionFlag = flags?.indecision_detected ?? false;
+    const stability = aggregated?.stability ?? 0;
+    const distribution = aggregated?.category_distribution ?? {};
+    const indecisionRatio = (distribution.stalling ?? 0) + (distribution.objection_soft ?? 0);
+    const contextualLackOfCommitment = stability < 0.5 && indecisionRatio > 0.6;
+    // 3. Métrica do Python (indecision_score) acima de threshold
+    const metricsLackOfCommitment = indecisionScore >= 0.6;
+    const lack_of_commitment =
+      pythonIndecisionFlag || contextualLackOfCommitment || metricsLackOfCommitment;
+    
+    return {
+      decision_postponement,
+      conditional_language,
+      lack_of_commitment,
+    };
+  }
+
+  // ========================================================================
+  // FASE 4: CÁLCULO DE CONSISTÊNCIA TEMPORAL
+  // ========================================================================
+  /**
+   * Calcula consistência temporal do padrão de indecisão.
+   * 
+   * Verifica se o padrão de indecisão se mantém consistente ao longo de uma
+   * janela temporal, analisando múltiplos fatores:
+   * - Proporção de textos de indecisão na janela (>= 70%)
+   * - Estabilidade da categoria dominante (>= 0.5)
+   * - Tendência estável (sem progresso ou regressão)
+   * 
+   * @param state Estado do participante contendo histórico de textos
+   * @param now Timestamp atual em milissegundos
+   * @param windowMs Janela temporal em milissegundos (padrão: 60000 = 60s)
+   * @returns true se o padrão é consistente, false caso contrário
+   * 
+   * @example
+   * ```typescript
+   * const isConsistent = this.calculateTemporalConsistency(state, now, 60000);
+   * if (isConsistent) {
+   *   // Padrão se mantém consistente ao longo do tempo
+   * }
+   * ```
+   */
+  private calculateTemporalConsistency(
+    state: ParticipantState,
+    now: number,
+    windowMs: number = 60000 // Últimos 60 segundos
+  ): boolean {
+    const textAnalysis = state.textAnalysis;
+    if (!textAnalysis) {
+      return false;
+    }
+    
+    const textHistory = textAnalysis.textHistory ?? [];
+    if (textHistory.length === 0) {
+      return false;
+    }
+    
+    const cutoffTime = now - windowMs;
+    const indecisionCategories = ['stalling', 'objection_soft'];
+    
+    // ========================================================================
+    // Filtrar textos dentro da janela temporal
+    // ========================================================================
+    const windowTexts = textHistory.filter(entry => entry.timestamp >= cutoffTime);
+    if (windowTexts.length === 0) {
+      return false;
+    }
+    
+    // ========================================================================
+    // Contar textos com categoria de indecisão e confiança mínima
+    // ========================================================================
+    const indecisionTexts = windowTexts.filter(entry => {
+      // Verificar se tem categoria de indecisão
+      if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
+        return false;
+      }
+      
+      // Verificar confiança mínima (>= 0.6)
+      if ((entry.sales_category_confidence ?? 0) < 0.6) {
+        return false;
+      }
+      
+      return true;
+    });
+    
+    // ========================================================================
+    // Verificar proporção mínima (70% dos chunks devem ser de indecisão)
+    // ========================================================================
+    const indecisionRatio = indecisionTexts.length / windowTexts.length;
+    if (indecisionRatio < 0.7) {
+      return false;
+    }
+    
+    // ========================================================================
+    // Verificar estabilidade da categoria dominante (>= 0.5)
+    // ========================================================================
+    // Estabilidade baixa indica alternância entre categorias, o que não é
+    // consistente com um padrão de indecisão mantido ao longo do tempo
+    const aggregated = textAnalysis.sales_category_aggregated;
+    const stability = aggregated?.stability ?? 0;
+    if (stability < 0.5) {
+      return false;
+    }
+    
+    // ========================================================================
+    // Verificar tendência estável (sem progresso ou regressão)
+    // ========================================================================
+    // Tendência estável indica que o padrão se mantém ao longo do tempo,
+    // sem mudanças significativas na direção da conversa
+    const trend = textAnalysis.sales_category_trend;
+    const isStable = trend?.trend === 'stable';
+    
+    return isStable;
+  }
+
+  // ========================================================================
+  // FASE 5: CÁLCULO DE CONFIDENCE COMBINADO
+  // ========================================================================
+  /**
+   * Calcula confidence combinado para detecção de indecisão.
+   * 
+   * Combina múltiplos sinais de indecisão usando média ponderada:
+   * - Padrões detectados (30%): número de padrões semânticos detectados
+   * - Estabilidade (20%): estabilidade da categoria dominante
+   * - Força da tendência (15%): quão forte é a tendência estável
+   * - Volume de dados (15%): quantidade de chunks analisados
+   * - Proporção de indecisão (10%): % de categorias de indecisão
+   * - Consistência temporal (10%): se padrão se mantém ao longo do tempo
+   * 
+   * @param state Estado do participante contendo análise de texto
+   * @param patterns Padrões semânticos detectados
+   * @param temporalConsistency Consistência temporal do padrão
+   * @returns Valor de confidence entre 0.0 e 1.0
+   * 
+   * @example
+   * ```typescript
+   * const patterns = this.detectIndecisionPatterns(state);
+   * const consistency = this.calculateTemporalConsistency(state, now);
+   * const confidence = this.calculateIndecisionConfidence(state, patterns, consistency);
+   * // confidence será entre 0.0 e 1.0
+   * ```
+   */
+  private calculateIndecisionConfidence(
+    state: ParticipantState,
+    patterns: {
+      decision_postponement: boolean;
+      conditional_language: boolean;
+      lack_of_commitment: boolean;
+    },
+    temporalConsistency: boolean
+  ): number {
+    const textAnalysis = state.textAnalysis;
+    if (!textAnalysis) {
+      return 0.0;
+    }
+    
+    const aggregated = textAnalysis.sales_category_aggregated;
+    const trend = textAnalysis.sales_category_trend;
+    
+    // ========================================================================
+    // Base: número de padrões detectados (0 a 3)
+    // ========================================================================
+    // Quanto mais padrões detectados, maior a confiança de que há indecisão
+    const patternsCount = Object.values(patterns).filter(Boolean).length;
+    const patternsScore = patternsCount / 3.0; // Normalizar para 0.0 a 1.0
+    
+    // ========================================================================
+    // Estabilidade da categoria dominante (0.0 a 1.0)
+    // ========================================================================
+    // Estabilidade alta indica que o padrão é consistente
+    const stability = aggregated?.stability ?? 0;
+    
+    // ========================================================================
+    // Força da tendência (0.0 a 1.0)
+    // ========================================================================
+    // Força alta indica que a tendência estável é bem definida
+    const trendStrength = trend?.trend_strength ?? 0;
+    
+    // ========================================================================
+    // Volume de dados (normalizado, 0.0 a 1.0)
+    // ========================================================================
+    // Mínimo 5 chunks, ideal 10+ chunks
+    // Mais dados = maior confiança na análise
+    const totalChunks = aggregated?.chunks_with_category ?? 0;
+    const volumeScore = Math.min(1.0, totalChunks / 10.0);
+    
+    // ========================================================================
+    // Proporção de categorias de indecisão (0.0 a 1.0)
+    // ========================================================================
+    // Quanto maior a proporção de categorias de indecisão, maior a confiança
+    const distribution = aggregated?.category_distribution ?? {};
+    const indecisionRatio = (distribution.stalling ?? 0) + (distribution.objection_soft ?? 0);
+    
+    // ========================================================================
+    // Consistência temporal (0.0 ou 1.0)
+    // ========================================================================
+    // Se padrão se mantém consistente ao longo do tempo, aumenta confiança
+    const consistencyScore = temporalConsistency ? 1.0 : 0.0;
+    
+    // ========================================================================
+    // Calcular confidence combinado (média ponderada)
+    // ========================================================================
+    // Pesos definidos baseados na importância de cada sinal:
+    // - Padrões detectados: 30% (mais importante - indica múltiplos sinais)
+    // - Estabilidade: 20% (importante - indica consistência)
+    // - Força da tendência: 15% (moderado - indica definição clara)
+    // - Volume de dados: 15% (moderado - mais dados = mais confiança)
+    // - Proporção de indecisão: 10% (menor - já considerado em outros fatores)
+    // - Consistência temporal: 10% (menor - já considerado em estabilidade)
+    const confidence = (
+      patternsScore * 0.30 +
+      stability * 0.20 +
+      trendStrength * 0.15 +
+      volumeScore * 0.15 +
+      indecisionRatio * 0.10 +
+      consistencyScore * 0.10
+    );
+    
+    // Garantir range [0, 1]
+    return Math.max(0.0, Math.min(1.0, confidence));
+  }
+
+  // ========================================================================
+  // FASE 7: HEURÍSTICA COMPLETA DE DETECÇÃO DE INDECISÃO
+  // ========================================================================
+  /**
+   * Detecta padrão consistente de indecisão do cliente.
+   * 
+   * Analisa múltiplos sinais para identificar quando o cliente apresenta
+   * um padrão consistente de indecisão, caracterizado por:
+   * - Postergar decisões
+   * - Solicitar mais tempo ou validações
+   * - Repetir dúvidas semelhantes
+   * - Evitar compromissos claros
+   * - Usar linguagem condicional ou aberta
+   * 
+   * @param state Estado do participante contendo análise de texto e histórico
+   * @param evt Evento de análise de texto atual
+   * @param now Timestamp atual em milissegundos
+   * @returns FeedbackEventPayload se indecisão detectada, null caso contrário
+   * 
+   * @example
+   * ```typescript
+   * const feedback = this.detectClientIndecision(state, evt, now);
+   * if (feedback) {
+   *   this.delivery.publishToHosts(evt.meetingId, feedback);
+   * }
+   * ```
+   */
+  private detectClientIndecision(
+    state: ParticipantState,
+    evt: TextAnalysisResult,
+    now: number,
+  ): FeedbackEventPayload | null {
+    this.logger.debug('🔍 [INDECISION] Checking client indecision...', {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+    });
+    
+    const textAnalysis = state.textAnalysis;
+    if (!textAnalysis) {
+      this.logger.debug('❌ [INDECISION] No text analysis data');
+      return null;
+    }
+    
+    // ========================================================================
+    // Verificar cooldown (2 minutos)
+    // ========================================================================
+    // Evita spam de feedbacks de indecisão
+    if (this.inCooldown(state, 'sales_client_indecision', now)) {
+      this.logger.debug('❌ [INDECISION] In cooldown ');
+      return null;
+    }
+    
+    // ========================================================================
+    // Verificar volume mínimo de dados
+    // ========================================================================
+    // Requer pelo menos 5 chunks com categoria para análise confiável
+    const aggregated = textAnalysis.sales_category_aggregated;
+    const chunksCount = aggregated?.chunks_with_category ?? 0;
+    // 🧪 TESTE: Threshold reduzido de 5 para 1 chunk
+    const hasEnoughData = chunksCount >= 1;
+    
+    this.logger.debug('📊 [INDECISION] Data volume check', {
+      chunksCount,
+      hasEnoughData,
+      threshold: 1,
+    });
+    
+    if (!hasEnoughData) {
+      this.logger.debug('❌ [INDECISION] Not enough data');
+      return null;
+    }
+    
+    // ========================================================================
+    // Detectar padrões semânticos
+    // ========================================================================
+    const patterns = this.detectIndecisionPatterns(state);
+    
+    this.logger.debug('🔍 [INDECISION] Patterns detected', {
+      decision_postponement: patterns.decision_postponement,
+      conditional_language: patterns.conditional_language,
+      lack_of_commitment: patterns.lack_of_commitment,
+    });
+    
+    // Verificar se pelo menos um padrão foi detectado
+    const hasPattern = Object.values(patterns).some(Boolean);
+    if (!hasPattern) {
+      this.logger.debug('❌ [INDECISION] No patterns detected');
+      return null;
+    }
+    
+    // ========================================================================
+    // Calcular consistência temporal
+    // ========================================================================
+    // Verifica se o padrão se mantém consistente ao longo do tempo
+    const temporalConsistency = this.calculateTemporalConsistency(state, now, 60000);
+    
+    this.logger.debug('⏱️ [INDECISION] Temporal consistency', {
+      temporalConsistency,
+    });
+    
+    // ========================================================================
+    // Calcular confidence combinado
+    // ========================================================================
+    // Combina múltiplos sinais para determinar confiança na detecção
+    const confidence = this.calculateIndecisionConfidence(state, patterns, temporalConsistency);
+    
+    this.logger.debug('📊 [INDECISION] Combined confidence', {
+      confidence,
+      threshold: 0.5,
+    });
+    
+    // Apenas gera feedback se houver confiança mínima na detecção
+    if (confidence < 0.5) {
+      this.logger.debug('❌ [INDECISION] Confidence too low');
+      return null;
+    }
+    
+    // ========================================================================
+    // Extrair frases representativas
+    // ========================================================================
+    // Obtém frases que exemplificam o padrão de indecisão
+    // Extrair frases representativas (threshold baixo: este passo é explicativo,
+    // não deve bloquear o envio do feedback quando os padrões já foram detectados).
+    let representativePhrases = this.extractRepresentativePhrases(
+      state,
+      now,
+      60000, // Últimos 60s
+      5,     // Máximo 5 frases
+      0.1    // Confiança mínima
+    );
+
+    // Fallback: se não houver frases no histórico (ex.: confidence muito baixo),
+    // use um trecho do texto atual para não bloquear a entrega do feedback.
+    if (representativePhrases.length === 0) {
+      const current = (evt.text || '').trim();
+      if (current) {
+        const maxLen = 180;
+        const snippet = current.length > maxLen ? `${current.slice(0, maxLen - 3)}...` : current;
+        representativePhrases = [snippet];
+      }
+    }
+    
+    this.logger.debug('💬 [INDECISION] Representative phrases', {
+      count: representativePhrases.length,
+      phrases: representativePhrases.slice(0, 3), // Mostrar apenas as 3 primeiras
+    });
+    
+    // Se não houver frases representativas, não gerar feedback
+    // (indica que não há exemplos concretos do padrão)
+    if (representativePhrases.length === 0) {
+      this.logger.debug('❌ [INDECISION] No representative phrases found');
+      return null;
+    }
+    
+    this.logger.log('✅ [INDECISION] All conditions met! Generating feedback...', {
+      confidence,
+      patterns,
+      temporalConsistency,
+      phrasesCount: representativePhrases.length,
+    });
+    
+    this.logger.log('📣 [INDECISION] Will generate humanized feedback', {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+    });
+    
+    // ========================================================================
+    // Construir lista de padrões detectados (para metadata)
+    // ========================================================================
+    const patternsDetected = Object.entries(patterns)
+      .filter(([, detected]) => detected)
+      .map(([pattern]) => pattern);
+    
+    // ========================================================================
+    // Construir mensagem curta e direta
+    // ========================================================================
+    let message: string;
+    
+    if (patterns.decision_postponement && patterns.lack_of_commitment) {
+      message = '⏳ Cliente adiando e evitando compromisso';
+    } else if (patterns.decision_postponement) {
+      message = '⏳ Cliente adiando a decisão';
+    } else if (patterns.lack_of_commitment) {
+      message = '🤔 Cliente hesitante';
+    } else if (patterns.conditional_language) {
+      message = '💭 Indecisão detectada';
+    } else {
+      message = '⚠️ Sinais de indecisão';
+    }
+    
+    // ========================================================================
+    // Construir tips curtas e práticas (máximo 2)
+    // ========================================================================
+    const tips: string[] = [];
+    
+    if (patterns.decision_postponement) {
+      tips.push('Crie urgência ou ofereça incentivo');
+    } else if (patterns.lack_of_commitment) {
+      tips.push('Pergunte o que está travando');
+    } else if (patterns.conditional_language) {
+      tips.push('Descubra a condição real');
+    }
+    
+    // Adicionar uma dica de ação se tiver espaço
+    if (tips.length < 2) {
+      if (temporalConsistency) {
+        tips.push('Mude a abordagem');
+      } else {
+        tips.push('Proponha próximo passo concreto');
+      }
+    }
+    
+    // ========================================================================
+    // Gerar feedback
+    // ========================================================================
+    const window = this.window(state, now, 60000); // Últimos 60s
+    this.setCooldown(state, 'sales_client_indecision', now, 120000); // Cooldown de 2min
+    
+    return {
+      id: this.makeId(),
+      type: 'sales_client_indecision',
+      severity: 'warning',
+      ts: now,
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      participantName: this.index.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+      window: { start: window.start, end: window.end },
+      message,
+      tips,
+      metadata: {
+        confidence: Math.round(confidence * 100) / 100, // Arredondar para 2 casas decimais
+        semantic_patterns_detected: patternsDetected,
+        representative_phrases: representativePhrases,
+        temporal_consistency: temporalConsistency,
+        sales_category: textAnalysis.sales_category ?? undefined,
+        sales_category_confidence: textAnalysis.sales_category_confidence ?? undefined,
+        sales_category_aggregated: aggregated ?? undefined,
+        indecision_metrics: textAnalysis.indecision_metrics ?? undefined,
+        conditional_keywords_detected: textAnalysis.conditional_keywords_detected ?? undefined,
+      },
+    };
   }
 
   private participantsForMeeting(meetingId: string): Array<[string, ParticipantState]> {

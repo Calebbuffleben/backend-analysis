@@ -17,6 +17,21 @@ export type Sample = {
 };
 
 /**
+ * Tipo para entrada no histórico de textos analisados.
+ * 
+ * Usado para manter histórico de textos recentes do participante,
+ * permitindo extração de frases representativas e análise temporal.
+ */
+export interface TextHistoryEntry {
+  text: string;
+  timestamp: number;
+  sales_category?: string | null;
+  sales_category_confidence?: number | null;
+  sales_category_intensity?: number | null;
+  sales_category_ambiguity?: number | null;
+}
+
+/**
  * Tipo para estado do participante
  */
 export type ParticipantState = {
@@ -106,6 +121,9 @@ export type ParticipantState = {
      * - price_window_open: True se há janela de oportunidade para falar sobre preço
      * - decision_signal_strong: True se há sinal forte de que cliente está pronto para decidir
      * - ready_to_close: True se cliente demonstra prontidão para fechar o negócio
+     * - indecision_detected: True se há sinais de indecisão no texto atual
+     * - decision_postponement_signal: True se cliente está postergando decisão
+     * - conditional_language_signal: True se há uso de linguagem condicional/aberta
      * 
      * undefined se sales_category for undefined/null ou se nenhuma flag estiver ativa.
      */
@@ -113,6 +131,9 @@ export type ParticipantState = {
       price_window_open?: boolean;
       decision_signal_strong?: boolean;
       ready_to_close?: boolean;
+      indecision_detected?: boolean;
+      decision_postponement_signal?: boolean;
+      conditional_language_signal?: boolean;
     } | null;
     /**
      * Agregação temporal de categorias baseada em janela de contexto.
@@ -146,6 +167,43 @@ export type ParticipantState = {
       current_stage?: number;
       velocity?: number;
     } | null;
+    /**
+     * Keywords condicionais detectadas no texto.
+     * 
+     * Lista de palavras e frases que indicam linguagem condicional ou hesitação,
+     * característica de clientes indecisos. Exemplos: "talvez", "pensar", "depois",
+     * "preciso avaliar", "vou ver", etc.
+     * 
+     * Array vazio se nenhuma keyword condicional for detectada.
+     */
+    conditional_keywords_detected?: string[];
+    /**
+     * Métricas específicas de indecisão pré-calculadas.
+     * 
+     * Métricas calculadas no Python para facilitar análise no backend:
+     * - indecision_score: Score geral de indecisão (0.0 a 1.0)
+     * - postponement_likelihood: Probabilidade de postergação de decisão (0.0 a 1.0)
+     * - conditional_language_score: Score de linguagem condicional (0.0 a 1.0)
+     * 
+     * null se métricas não puderem ser calculadas ou se sales_category for null.
+     */
+    indecision_metrics?: {
+      indecision_score?: number;
+      postponement_likelihood?: number;
+      conditional_language_score?: number;
+    } | null;
+    /**
+     * Histórico de textos analisados recentemente.
+     * 
+     * Mantém últimos N textos (padrão: 20) para permitir:
+     * - Extração de frases representativas
+     * - Análise temporal de padrões
+     * - Detecção de consistência ao longo do tempo
+     * 
+     * Cada entrada contém o texto original, timestamp e campos
+     * relevantes de sales_category para análise posterior.
+     */
+    textHistory?: TextHistoryEntry[];
   };
 };
 

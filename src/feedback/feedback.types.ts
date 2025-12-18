@@ -69,7 +69,8 @@ export interface FeedbackEventPayload {
     | 'sales_ready_to_close'
     | 'sales_objection_escalating'
     | 'sales_conversation_stalling'
-    | 'sales_category_transition';
+    | 'sales_category_transition'
+    | 'sales_client_indecision';
   severity: FeedbackSeverity;
   ts: number;
   meetingId: string;
@@ -93,6 +94,32 @@ export interface FeedbackEventPayload {
     transition_confidence?: number;
     stage_difference?: number;
     trend_strength?: number;
+    // Campos específicos para detecção de indecisão do cliente
+    confidence?: number;
+    semantic_patterns_detected?: string[];
+    representative_phrases?: string[];
+    temporal_consistency?: boolean;
+    /**
+     * Métricas semânticas de indecisão vindas do serviço Python (quando disponíveis).
+     *
+     * Útil para debug no frontend e para explicar por que o feedback disparou.
+     */
+    indecision_metrics?: {
+      indecision_score?: number;
+      postponement_likelihood?: number;
+      conditional_language_score?: number;
+    };
+    /**
+     * Keywords/fra ses condicionais detectadas no texto (serviço Python).
+     */
+    conditional_keywords_detected?: string[];
+    sales_category_aggregated?: {
+      dominant_category?: string;
+      category_distribution?: Record<string, number>;
+      stability?: number;
+      total_chunks?: number;
+      chunks_with_category?: number;
+    };
   };
 }
 
@@ -168,6 +195,9 @@ export interface TextAnalysisEvent {
      * - price_window_open: True se há janela de oportunidade para falar sobre preço
      * - decision_signal_strong: True se há sinal forte de que cliente está pronto para decidir
      * - ready_to_close: True se cliente demonstra prontidão para fechar o negócio
+     * - indecision_detected: True se há sinais de indecisão no texto atual
+     * - decision_postponement_signal: True se cliente está postergando decisão
+     * - conditional_language_signal: True se há uso de linguagem condicional/aberta
      * 
      * undefined se sales_category for undefined/null ou se nenhuma flag estiver ativa.
      */
@@ -175,6 +205,9 @@ export interface TextAnalysisEvent {
       price_window_open?: boolean;
       decision_signal_strong?: boolean;
       ready_to_close?: boolean;
+      indecision_detected?: boolean;
+      decision_postponement_signal?: boolean;
+      conditional_language_signal?: boolean;
     } | null;
     /**
      * Agregação temporal de categorias baseada em janela de contexto.
@@ -207,6 +240,31 @@ export interface TextAnalysisEvent {
       trend_strength?: number;
       current_stage?: number;
       velocity?: number;
+    } | null;
+    /**
+     * Keywords condicionais detectadas no texto.
+     * 
+     * Lista de palavras e frases que indicam linguagem condicional ou hesitação,
+     * característica de clientes indecisos. Exemplos: "talvez", "pensar", "depois",
+     * "preciso avaliar", "vou ver", etc.
+     * 
+     * Array vazio se nenhuma keyword condicional for detectada.
+     */
+    conditional_keywords_detected?: string[];
+    /**
+     * Métricas específicas de indecisão pré-calculadas.
+     * 
+     * Métricas calculadas no Python para facilitar análise no backend:
+     * - indecision_score: Score geral de indecisão (0.0 a 1.0)
+     * - postponement_likelihood: Probabilidade de postergação de decisão (0.0 a 1.0)
+     * - conditional_language_score: Score de linguagem condicional (0.0 a 1.0)
+     * 
+     * null se métricas não puderem ser calculadas ou se sales_category for null.
+     */
+    indecision_metrics?: {
+      indecision_score?: number;
+      postponement_likelihood?: number;
+      conditional_language_score?: number;
     } | null;
   };
   timestamp: number;

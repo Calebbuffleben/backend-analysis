@@ -17,8 +17,7 @@ import { FeedbackModule } from './feedback/feedback.module';
     PrismaModule,
     SessionsModule,
     LiveKitWebhookModule,
-    AudioPipelineModule,
-    TextAnalysisModule,
+    AudioPipelineModule, // Já importa TextAnalysisModule internamente
     WebSocketModule,
     FeedbackModule,
   ],

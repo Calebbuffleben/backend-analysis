@@ -30,7 +30,7 @@ export class AudioPipelineService {
 
   constructor(
     private readonly hume: HumeStreamService,
-    @Optional() private readonly textAnalysis?: TextAnalysisService,
+    private readonly textAnalysis: TextAnalysisService,
   ) {
     const seconds = Number(process.env.AUDIO_PIPELINE_GROUP_SECONDS || '2');
     this.defaultGroupSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 2;
@@ -39,7 +39,7 @@ export class AudioPipelineService {
     
     // Verificar se transcrição de áudio está habilitada
     const transcriptionEnabled = (process.env.AUDIO_TRANSCRIPTION_ENABLED || 'true') === 'true';
-    if (transcriptionEnabled && this.textAnalysis) {
+    if (transcriptionEnabled) {
       this.logger.log('Audio transcription enabled - audio will be sent for transcription');
     }
   }
@@ -144,8 +144,8 @@ export class AudioPipelineService {
     
     // Enviar áudio para transcrição (se habilitado)
     const transcriptionEnabled = (process.env.AUDIO_TRANSCRIPTION_ENABLED || 'true') === 'true';
-    const isTextAnalysisAvailable = !!this.textAnalysis;
-    const isTextAnalysisConnected = this.textAnalysis?.isConnected() ?? false;
+    const isTextAnalysisAvailable = true; // Sempre disponível agora (não é mais @Optional)
+    const isTextAnalysisConnected = this.textAnalysis.isConnected();
     
     this.logger.debug(
       `Audio transcription check: enabled=${transcriptionEnabled}, serviceAvailable=${isTextAnalysisAvailable}, connected=${isTextAnalysisConnected}`,
