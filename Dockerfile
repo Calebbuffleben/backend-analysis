@@ -43,10 +43,11 @@ RUN pnpm install --prod --frozen-lockfile
 # Install Prisma CLI globally for migrations (needed for migrate deploy)
 RUN npm install -g prisma@^5.20.0
 
-# Copy Prisma schema and generated client
+# Copy Prisma schema
 COPY --from=base /app/prisma ./prisma
-COPY --from=base /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=base /app/node_modules/@prisma ./node_modules/@prisma
+
+# Generate Prisma client in production stage (needed for runtime)
+RUN pnpm prisma:generate
 
 # Copy built application
 COPY --from=base /app/dist ./dist
