@@ -2357,10 +2357,10 @@ export class FeedbackAggregatorService {
     // - Proporção de indecisão: 10% (menor - já considerado em outros fatores)
     // - Consistência temporal: 10% (menor - já considerado em estabilidade)
     const confidence = (
-      patternsScore * 0.30 +
+      patternsScore * 0.40 +
       stability * 0.20 +
-      trendStrength * 0.15 +
-      volumeScore * 0.15 +
+      trendStrength * 0.10 +
+      volumeScore * 0.10 +
       indecisionRatio * 0.10 +
       consistencyScore * 0.10
     );
@@ -2477,12 +2477,13 @@ export class FeedbackAggregatorService {
     
     this.logger.debug('📊 [INDECISION] Combined confidence', {
       confidence,
-      threshold: 0.5,
+      threshold: 0.4,
     });
     
     // Apenas gera feedback se houver confiança mínima na detecção
-    if (confidence < 0.5) {
-      this.logger.debug('❌ [INDECISION] Confidence too low');
+    // Threshold reduzido para 0.4 para balancear detecção vs falsos positivos
+    if (confidence < 0.4) {
+      this.logger.debug('❌ [INDECISION] Confidence too low', { confidence, threshold: 0.4 });
       return null;
     }
     
