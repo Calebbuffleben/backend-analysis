@@ -1,6 +1,9 @@
 # Use Node.js 18 (LTS) as base image
 FROM node:18-alpine AS base
 
+# Install OpenSSL and other dependencies required by Prisma
+RUN apk add --no-cache openssl openssl-dev libc6-compat
+
 # Install pnpm globally
 RUN npm install -g pnpm@10.18.2
 
@@ -27,6 +30,9 @@ RUN pnpm build
 
 # Production stage
 FROM node:18-alpine AS production
+
+# Install OpenSSL and other dependencies required by Prisma
+RUN apk add --no-cache openssl openssl-dev libc6-compat
 
 # Install pnpm globally
 RUN npm install -g pnpm@10.18.2
