@@ -11,6 +11,26 @@ import * as fs from 'fs';
 import type { Request, Response, NextFunction } from 'express';
 
 async function bootstrap() {
+  // Production diagnostics: make container stops actionable in Railway logs.
+  // - SIGTERM is commonly sent by platform (healthcheck failure/redeploy/scale down).
+  // - uncaughtException/unhandledRejection helps us see real crashes.
+  process.on('SIGTERM', () => {
+    // eslint-disable-next-line no-console
+    console.log('[shutdown] SIGTERM received (platform requested stop)');
+  });
+  process.on('SIGINT', () => {
+    // eslint-disable-next-line no-console
+    console.log('[shutdown] SIGINT received');
+  });
+  process.on('uncaughtException', (err) => {
+    // eslint-disable-next-line no-console
+    console.error('[fatal] uncaughtException', err);
+  });
+  process.on('unhandledRejection', (reason) => {
+    // eslint-disable-next-line no-console
+    console.error('[fatal] unhandledRejection', reason);
+  });
+
   // Load env from ./env if present (apps/backend/env)
   try {
     const envPath = path.resolve(process.cwd(), 'env');
@@ -38,6 +58,7 @@ async function bootstrap() {
   } catch {}
 
   const app = await NestFactory.create(AppModule);
+  app.enableShutdownHooks();
 
   // Enable CORS
   app.enableCors({
