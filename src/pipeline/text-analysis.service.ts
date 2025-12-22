@@ -185,6 +185,8 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
   private readonly pythonServiceUrl: string;
   private reconnectAttempts = 0;
   private readonly maxReconnectAttempts = 10;
+  private lastPongAtMs: number | null = null;
+  private readonly pongTtlMs = 30_000;
 
   constructor(private readonly emitter: EventEmitter2) {
     // Socket.IO client adiciona automaticamente /socket.io/ ao conectar
@@ -241,6 +243,25 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
       this.logger.log('✅ Connected to Python text analysis service');
       this.logger.log(`Socket ID: ${this.socket?.id}, Connected: ${this.socket?.connected}`);
       this.reconnectAttempts = 0;
+
+      // Provar que é o serviço Python (handshake ping/pong)
+      // Se estivermos conectados no endpoint errado (ex: nosso próprio WS), não virá pong.
+      try {
+        const ts = Date.now();
+        this.socket?.emit('ping', { timestamp: ts });
+        this.logger.log(`🏓 Sent ping to text-analysis service (ts=${ts})`);
+      } catch (e) {
+        this.logger.warn(
+          `Failed to send ping to Python service: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    });
+
+    this.socket.on('pong', (data: { timestamp?: number; service?: string }) => {
+      this.lastPongAtMs = Date.now();
+      this.logger.log(
+        `🏓 Received pong from ${data?.service ?? 'unknown'} (ts=${data?.timestamp ?? 'N/A'})`,
+      );
     });
 
     this.socket.on('text_analysis_result', (data: TextAnalysisResult) => {
@@ -308,6 +329,7 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
         url: this.pythonServiceUrl,
         reason,
       });
+      this.lastPongAtMs = null;
     });
 
     this.socket.on('connect_error', (error: Error) => {
@@ -420,6 +442,12 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
 
   isConnected(): boolean {
     return this.socket?.connected ?? false;
+  }
+
+  isHealthy(): boolean {
+    if (!this.socket?.connected) return false;
+    if (this.lastPongAtMs === null) return false;
+    return Date.now() - this.lastPongAtMs <= this.pongTtlMs;
   }
 }
 

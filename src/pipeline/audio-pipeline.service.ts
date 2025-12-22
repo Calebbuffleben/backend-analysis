@@ -146,12 +146,13 @@ export class AudioPipelineService {
     const transcriptionEnabled = (process.env.AUDIO_TRANSCRIPTION_ENABLED || 'true') === 'true';
     const isTextAnalysisAvailable = true; // Sempre disponível agora (não é mais @Optional)
     const isTextAnalysisConnected = this.textAnalysis.isConnected();
+    const isTextAnalysisHealthy = this.textAnalysis.isHealthy();
     
     this.logger.debug(
-      `Audio transcription check: enabled=${transcriptionEnabled}, serviceAvailable=${isTextAnalysisAvailable}, connected=${isTextAnalysisConnected}`,
+      `Audio transcription check: enabled=${transcriptionEnabled}, serviceAvailable=${isTextAnalysisAvailable}, connected=${isTextAnalysisConnected}, healthy=${isTextAnalysisHealthy}`,
     );
     
-    if (transcriptionEnabled && isTextAnalysisAvailable && isTextAnalysisConnected) {
+    if (transcriptionEnabled && isTextAnalysisAvailable && isTextAnalysisConnected && isTextAnalysisHealthy) {
       // Enviar de forma assíncrona para não bloquear o fluxo principal
       this.logger.debug(
         `Sending audio chunk for transcription: ${meta.meetingId}/${meta.participant}/${meta.track} (${wavBody.length} bytes)`,
@@ -179,6 +180,10 @@ export class AudioPipelineService {
         this.logger.debug('TextAnalysisService is not available');
       } else if (!isTextAnalysisConnected) {
         this.logger.debug('TextAnalysisService is not connected to Python service');
+      } else if (!isTextAnalysisHealthy) {
+        this.logger.warn(
+          'TextAnalysisService connected, but did not receive pong from Python (likely wrong TEXT_ANALYSIS_SERVICE_URL or WS blocked)',
+        );
       }
     }
   }
