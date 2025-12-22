@@ -2347,22 +2347,37 @@ export class FeedbackAggregatorService {
     const consistencyScore = temporalConsistency ? 1.0 : 0.0;
     
     // ========================================================================
+    // Força das métricas de indecisão do Python (0.0 a 1.0)
+    // ========================================================================
+    // Essas métricas são o sinal mais direto para "indecisão" e devem influenciar
+    // o confidence final, senão a heurística fica dependente demais de agregações
+    // (stability/trend) que podem demorar a estabilizar.
+    const indecisionMetrics = textAnalysis.indecision_metrics;
+    const metricsScore = Math.max(
+      indecisionMetrics?.indecision_score ?? 0,
+      indecisionMetrics?.postponement_likelihood ?? 0,
+      indecisionMetrics?.conditional_language_score ?? 0,
+    );
+
+    // ========================================================================
     // Calcular confidence combinado (média ponderada)
     // ========================================================================
     // Pesos definidos baseados na importância de cada sinal:
-    // - Padrões detectados: 30% (mais importante - indica múltiplos sinais)
-    // - Estabilidade: 20% (importante - indica consistência)
-    // - Força da tendência: 15% (moderado - indica definição clara)
-    // - Volume de dados: 15% (moderado - mais dados = mais confiança)
-    // - Proporção de indecisão: 10% (menor - já considerado em outros fatores)
-    // - Consistência temporal: 10% (menor - já considerado em estabilidade)
+    // - Padrões detectados: 30% (combinação de sinais semânticos)
+    // - Métricas do Python: 25% (sinal direto de indecisão)
+    // - Estabilidade: 15% (consistência do dominante)
+    // - Força da tendência: 10% (quão bem definida é a tendência)
+    // - Volume de dados: 10% (mais dados = mais confiança)
+    // - Proporção de indecisão: 5% (stalling + objection_soft)
+    // - Consistência temporal: 5% (padrão sustentado na janela)
     const confidence = (
-      patternsScore * 0.40 +
-      stability * 0.20 +
+      patternsScore * 0.30 +
+      metricsScore * 0.25 +
+      stability * 0.15 +
       trendStrength * 0.10 +
       volumeScore * 0.10 +
-      indecisionRatio * 0.10 +
-      consistencyScore * 0.10
+      indecisionRatio * 0.05 +
+      consistencyScore * 0.05
     );
     
     // Garantir range [0, 1]
@@ -2477,13 +2492,12 @@ export class FeedbackAggregatorService {
     
     this.logger.debug('📊 [INDECISION] Combined confidence', {
       confidence,
-      threshold: 0.4,
+      threshold: 0.5,
     });
-    
+
     // Apenas gera feedback se houver confiança mínima na detecção
-    // Threshold reduzido para 0.4 para balancear detecção vs falsos positivos
-    if (confidence < 0.4) {
-      this.logger.debug('❌ [INDECISION] Confidence too low', { confidence, threshold: 0.4 });
+    if (confidence < 0.5) {
+      this.logger.debug('❌ [INDECISION] Confidence too low', { confidence, threshold: 0.5 });
       return null;
     }
     
@@ -2517,12 +2531,8 @@ export class FeedbackAggregatorService {
       phrases: representativePhrases.slice(0, 3), // Mostrar apenas as 3 primeiras
     });
     
-    // Se não houver frases representativas, não gerar feedback
-    // (indica que não há exemplos concretos do padrão)
-    if (representativePhrases.length === 0) {
-      this.logger.debug('❌ [INDECISION] No representative phrases found');
-      return null;
-    }
+    // Não bloquear envio por falta de frases (isso é explicativo/metadata).
+    // Se não houver frases, seguimos com metadata vazia.
     
     this.logger.log('✅ [INDECISION] All conditions met! Generating feedback...', {
       confidence,
