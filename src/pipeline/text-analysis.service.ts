@@ -214,13 +214,21 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`🔌 Connecting to Python text analysis service: ${this.pythonServiceUrl}`);
 
     try {
+      // Configurações otimizadas para Railway/produção
+      // Tentar WebSocket primeiro, depois polling como fallback
       this.socket = io(this.pythonServiceUrl, {
-        transports: ['polling', 'websocket'], // Permite polling primeiro, depois upgrade para WebSocket
+        transports: ['websocket', 'polling'], // WebSocket primeiro (melhor para Railway)
         reconnection: true,
-        reconnectionDelay: 1000,
+        reconnectionDelay: 2000, // Aumentar delay entre tentativas
         reconnectionAttempts: this.maxReconnectAttempts,
-        timeout: 10000, // Aumentado para 10s para conexões mais lentas
-        forceNew: false,
+        timeout: 20000, // Timeout maior para Railway
+        forceNew: true, // Forçar nova conexão a cada tentativa
+        path: '/socket.io/', // Path explícito
+        // Configurações adicionais para Railway
+        upgrade: true,
+        rememberUpgrade: false, // Não lembrar upgrade em caso de falha
+        // Headers adicionais se necessário
+        extraHeaders: {},
       });
     } catch (error) {
       this.logger.error(
@@ -288,11 +296,18 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.socket.on('error', (error: Error) => {
-      this.logger.error(`Python service error: ${error.message}`);
+      this.logger.error(`Python service error: ${error.message}`, {
+        url: this.pythonServiceUrl,
+        errorType: error.constructor.name,
+        stack: error.stack,
+      });
     });
 
     this.socket.on('disconnect', (reason: string) => {
-      this.logger.warn(`Disconnected from Python service: ${reason}`);
+      this.logger.warn(`Disconnected from Python service: ${reason}`, {
+        url: this.pythonServiceUrl,
+        reason,
+      });
     });
 
     this.socket.on('connect_error', (error: Error) => {
@@ -300,6 +315,13 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Failed to connect to Python service (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}): ${error.message}`,
       );
+      // Log adicional para diagnóstico
+      this.logger.debug(`Connection error details:`, {
+        url: this.pythonServiceUrl,
+        errorType: error.constructor.name,
+        errorMessage: error.message,
+        stack: error.stack,
+      });
     });
   }
 
