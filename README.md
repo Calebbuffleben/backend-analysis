@@ -164,6 +164,30 @@ docker-compose logs -f postgres
 - `pnpm prisma:migrate` - Cria e aplica migrações
 - `pnpm prisma:studio` - Abre o Prisma Studio
 
+## Testes (Jest)
+
+### Rodar todos os testes
+
+```bash
+pnpm test
+```
+
+### Rodar somente os testes de contrato (sales detectors)
+
+Esses testes garantem o comportamento do backend de publicar feedbacks quando chegam eventos `text.analysis`:
+- **Indecisão do cliente**: `sales_client_indecision`
+- **Solução foi compreendida (reformulação)**: `sales_solution_understood`
+
+```bash
+pnpm test -- sales-client-indecision.spec.ts sales-solution-understood.spec.ts
+```
+
+### Dica: rodar um teste específico
+
+```bash
+pnpm test -- sales-solution-understood.spec.ts
+```
+
 ## WebSocket
 
 O WebSocket está configurado e disponível em `ws://localhost:3001`. O gateway está configurado para aceitar conexões de qualquer origem em desenvolvimento.
