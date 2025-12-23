@@ -75,6 +75,7 @@ enum FeedbackType {
   sales_conversation_stalling
   sales_category_transition
   sales_client_indecision
+  sales_solution_understood
 }
 
 model FeedbackEvent {

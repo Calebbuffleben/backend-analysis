@@ -70,7 +70,8 @@ export interface FeedbackEventPayload {
     | 'sales_objection_escalating'
     | 'sales_conversation_stalling'
     | 'sales_category_transition'
-    | 'sales_client_indecision';
+    | 'sales_client_indecision'
+    | 'sales_solution_understood';
   severity: FeedbackSeverity;
   ts: number;
   meetingId: string;
@@ -120,6 +121,12 @@ export interface FeedbackEventPayload {
       total_chunks?: number;
       chunks_with_category?: number;
     };
+    // Campos específicos para detecção de "solução foi compreendida" (reformulação)
+    similarity_raw?: number;
+    markers_detected?: string[];
+    keyword_overlap?: number;
+    solution_context_excerpt?: string;
+    client_reformulation_excerpt?: string;
   };
 }
 

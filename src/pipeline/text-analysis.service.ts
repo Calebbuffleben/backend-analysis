@@ -96,6 +96,8 @@ export interface TextAnalysisResult {
       indecision_detected?: boolean;
       decision_postponement_signal?: boolean;
       conditional_language_signal?: boolean;
+      // (Opcional) Teach-back/reformulação detectada no texto atual
+      solution_reformulation_signal?: boolean;
     } | null;
     /**
      * Agregação temporal de categorias baseada em janela de contexto.
@@ -173,6 +175,14 @@ export interface TextAnalysisResult {
       postponement_likelihood?: number;
       conditional_language_score?: number;
     } | null;
+    /**
+     * Marcadores de reformulação/teach-back detectados no texto atual (PT-BR).
+     */
+    reformulation_markers_detected?: string[];
+    /**
+     * Score simples (0..1) baseado na presença de marcadores de reformulação.
+     */
+    reformulation_marker_score?: number;
   };
   timestamp: number;
   confidence: number;
@@ -353,6 +363,7 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // TODO: (Flow) Pre-transcribed text ingestion (`/egress-transcription` → `transcription_chunk`) is not used in the current main pipeline (audio → Whisper). Kept as an optional fallback.
   async sendTranscription(chunk: TranscriptionChunk): Promise<void> {
     if (!this.socket?.connected) {
       this.logger.warn('Python service not connected, skipping transcription');

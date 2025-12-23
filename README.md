@@ -84,6 +84,18 @@ pnpm prisma:migrate
 
 O backend depende de um arquivo `.env` com credenciais de banco, LiveKit e integrações externas. Use `apps/backend/env.example` como referência e preencha os valores adequados para o seu ambiente (produção, staging, desenvolvimento).
 
+## Variáveis de ambiente (feedback de vendas)
+
+### Detecção: “Solução foi compreendida” (teach-back / reformulação)
+
+- **`SALES_SOLUTION_UNDERSTOOD_ENABLED`**: `true|false` (default: `false`)
+- **`SALES_SOLUTION_UNDERSTOOD_DEBUG`**: `true|false` (default: `false`) — logs de gating/similarity/confidence
+- **`SALES_SOLUTION_UNDERSTOOD_THRESHOLD`**: `0..1` (default: `0.70`)
+- **`SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS`**: ms (default: `120000`, `0` desabilita cooldown)
+- **`SALES_SOLUTION_UNDERSTOOD_MIN_REFORMULATION_CHARS`**: int (default: `40`)
+- **`SALES_SOLUTION_CONTEXT_WINDOW_MS`**: ms (default: `90000`)
+- **`SALES_SOLUTION_CONTEXT_MAX_ENTRIES`**: int (default: `12`)
+
 ## Executando a aplicação
 
 ### Desenvolvimento

@@ -134,6 +134,8 @@ export type ParticipantState = {
       indecision_detected?: boolean;
       decision_postponement_signal?: boolean;
       conditional_language_signal?: boolean;
+      // (Opcional) Teach-back/reformulação detectada no texto atual
+      solution_reformulation_signal?: boolean;
     } | null;
     /**
      * Agregação temporal de categorias baseada em janela de contexto.

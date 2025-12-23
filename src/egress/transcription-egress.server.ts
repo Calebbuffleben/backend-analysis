@@ -12,6 +12,7 @@ export interface TranscriptionEgressWsOptions {
   path?: string;
 }
 
+// TODO: (Flow) This WS endpoint supports pre-transcribed caption ingestion; current main pipeline uses `/egress-audio` + Whisper (Python) for transcription.
 export function setupTranscriptionEgressWsServer(
   httpServer: HttpServer,
   opts?: TranscriptionEgressWsOptions,
