@@ -187,6 +187,7 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
   private readonly maxReconnectAttempts = 10;
   private lastPongAtMs: number | null = null;
   private readonly pongTtlMs = 30_000;
+  private healthPingInterval: NodeJS.Timeout | null = null;
 
   constructor(private readonly emitter: EventEmitter2) {
     // Socket.IO client adiciona automaticamente /socket.io/ ao conectar
@@ -244,25 +245,21 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`Socket ID: ${this.socket?.id}, Connected: ${this.socket?.connected}`);
       this.reconnectAttempts = 0;
 
-      // Provar que é o serviço Python (handshake ping/pong)
-      // Se estivermos conectados no endpoint errado (ex: nosso próprio WS), não virá pong.
-      try {
-        const ts = Date.now();
-        this.socket?.emit('ping', { timestamp: ts });
-        this.logger.log(`🏓 Sent ping to text-analysis service (ts=${ts})`);
-      } catch (e) {
-        this.logger.warn(
-          `Failed to send ping to Python service: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
+      // Handshake de saúde (eventos customizados para evitar colisão com heartbeat interno)
+      this.startHealthPingLoop();
     });
 
-    this.socket.on('pong', (data: { timestamp?: number; service?: string }) => {
+    const onAnyPong = (label: 'pong' | 'health_pong') => (data: { timestamp?: number; service?: string }) => {
       this.lastPongAtMs = Date.now();
       this.logger.log(
-        `🏓 Received pong from ${data?.service ?? 'unknown'} (ts=${data?.timestamp ?? 'N/A'})`,
+        `🏓 Received ${label} from ${data?.service ?? 'unknown'} (ts=${data?.timestamp ?? 'N/A'})`,
       );
-    });
+    };
+
+    // Backwards-compat (if server emits 'pong')
+    this.socket.on('pong', onAnyPong('pong'));
+    // Preferred (our custom health channel)
+    this.socket.on('health_pong', onAnyPong('health_pong'));
 
     this.socket.on('text_analysis_result', (data: TextAnalysisResult) => {
       // Log básico da recepção
@@ -330,6 +327,7 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
         reason,
       });
       this.lastPongAtMs = null;
+      this.stopHealthPingLoop();
     });
 
     this.socket.on('connect_error', (error: Error) => {
@@ -448,6 +446,31 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
     if (!this.socket?.connected) return false;
     if (this.lastPongAtMs === null) return false;
     return Date.now() - this.lastPongAtMs <= this.pongTtlMs;
+  }
+
+  private startHealthPingLoop(): void {
+    this.stopHealthPingLoop();
+    const send = () => {
+      try {
+        const ts = Date.now();
+        this.socket?.emit('health_ping', { timestamp: ts });
+        this.logger.debug(`🏓 Sent health_ping (ts=${ts})`);
+      } catch (e) {
+        this.logger.warn(
+          `Failed to send health_ping to Python service: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    };
+    // Send immediately, then keep-alive
+    send();
+    this.healthPingInterval = setInterval(send, 10_000);
+  }
+
+  private stopHealthPingLoop(): void {
+    if (this.healthPingInterval) {
+      clearInterval(this.healthPingInterval);
+      this.healthPingInterval = null;
+    }
   }
 }
 
