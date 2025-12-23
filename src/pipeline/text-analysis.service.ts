@@ -225,6 +225,7 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.log(`🔌 Connecting to Python text analysis service: ${this.pythonServiceUrl}`);
+    this.logger.log(`[DIAGNOSTIC] Socket.IO will attempt connection with transports: websocket, polling`);
 
     try {
       // Configurações otimizadas para Railway/produção
@@ -342,11 +343,11 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
 
     this.socket.on('connect_error', (error: Error) => {
       this.reconnectAttempts++;
-      this.logger.warn(
-        `Failed to connect to Python service (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}): ${error.message}`,
+      this.logger.error(
+        `❌ Failed to connect to Python service (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}): ${error.message}`,
       );
-      // Log adicional para diagnóstico
-      this.logger.debug(`Connection error details:`, {
+      // Log adicional para diagnóstico (agora como ERROR para garantir visibilidade)
+      this.logger.error(`[DIAGNOSTIC] Connection error details:`, {
         url: this.pythonServiceUrl,
         errorType: error.constructor.name,
         errorMessage: error.message,

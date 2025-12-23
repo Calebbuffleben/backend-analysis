@@ -2685,14 +2685,27 @@ export class FeedbackAggregatorService {
 
     const text = (evt.text || '').trim();
     const embedding = evt.analysis.embedding;
-    if (!text || !Array.isArray(embedding) || embedding.length === 0) return;
+    if (!text || !Array.isArray(embedding) || embedding.length === 0) {
+      if (debug) this.logger.debug('🧩 [SOLUTION_CONTEXT] Skipping: missing text or embedding');
+      return;
+    }
 
     const role = this.index.getParticipantRole(evt.meetingId, evt.participantId);
     const strength = this.computeSolutionExplanationStrength(evt);
 
     // Se for host, aceitamos um strength menor. Se não soubermos a role, exigimos strength alto.
     const minStrength = role === 'host' ? 0.5 : role === 'unknown' ? 0.85 : 0.95;
-    if (strength < minStrength) return;
+    if (strength < minStrength) {
+      if (debug) {
+        this.logger.debug('🧩 [SOLUTION_CONTEXT] Rejected: strength too low', {
+          role,
+          strength: Math.round(strength * 100) / 100,
+          minStrength,
+          textPreview: text.slice(0, 60),
+        });
+      }
+      return;
+    }
 
     const windowMsRaw = process.env.SALES_SOLUTION_CONTEXT_WINDOW_MS;
     const windowMsParsed = windowMsRaw ? Number.parseInt(windowMsRaw.replace(/"/g, ''), 10) : 90_000;
@@ -2749,6 +2762,15 @@ export class FeedbackAggregatorService {
 
     // Evitar disparar no próprio host (quando roles existem)
     const role = this.index.getParticipantRole(evt.meetingId, evt.participantId);
+    if (debug) {
+      this.logger.debug('🔍 [SOLUTION_UNDERSTOOD] Checking client reformulation', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        role,
+        textPreview: text.slice(0, 80),
+        textLength: text.length,
+      });
+    }
     if (role === 'host') {
       if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Skipping host turn');
       return null;
@@ -2765,8 +2787,20 @@ export class FeedbackAggregatorService {
 
     const markers = this.detectReformulationMarkers(text);
     if (markers.length === 0) {
-      if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No reformulation markers');
+      if (debug) {
+        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No reformulation markers', {
+          textPreview: text.slice(0, 100),
+          textLength: text.length,
+        });
+      }
       return null;
+    }
+    if (debug) {
+      this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Reformulation markers found', {
+        markers,
+        count: markers.length,
+        textPreview: text.slice(0, 100),
+      });
     }
 
     const minCharsRaw = process.env.SALES_SOLUTION_UNDERSTOOD_MIN_REFORMULATION_CHARS;
@@ -2779,8 +2813,21 @@ export class FeedbackAggregatorService {
 
     const contextEntries = this.getSolutionContextEntriesForDetection(evt.meetingId, evt.participantId, now);
     if (contextEntries.length === 0) {
-      if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No solution context available');
+      if (debug) {
+        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No solution context available', {
+          meetingId: evt.meetingId,
+          participantId: evt.participantId,
+          totalContextEntries: this.solutionContextByMeeting.get(evt.meetingId)?.length ?? 0,
+        });
+      }
       return null;
+    }
+    if (debug) {
+      this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Context available', {
+        contextEntriesCount: contextEntries.length,
+        contextRoles: contextEntries.map((e) => e.role),
+        contextStrengths: contextEntries.map((e) => Math.round(e.strength * 100) / 100),
+      });
     }
 
     const centroid = this.meanEmbedding(contextEntries.map((e) => e.embedding));
@@ -2792,8 +2839,18 @@ export class FeedbackAggregatorService {
     const similarityRaw = this.cosineSimilarity(embedding, centroid);
     // Safety: se não parece relacionado, não adianta continuar
     if (similarityRaw < 0.6) {
-      if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Similarity too low', { similarityRaw });
+      if (debug) {
+        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Similarity too low', {
+          similarityRaw: Math.round(similarityRaw * 1000) / 1000,
+          minRequired: 0.6,
+        });
+      }
       return null;
+    }
+    if (debug) {
+      this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Similarity OK', {
+        similarityRaw: Math.round(similarityRaw * 1000) / 1000,
+      });
     }
     const similarityScore = this.clamp01((similarityRaw - 0.55) / 0.25);
     const markerScore = this.clamp01(markers.length / 2);
