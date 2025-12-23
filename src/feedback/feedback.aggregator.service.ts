@@ -2693,8 +2693,10 @@ export class FeedbackAggregatorService {
     const role = this.index.getParticipantRole(evt.meetingId, evt.participantId);
     const strength = this.computeSolutionExplanationStrength(evt);
 
-    // Se for host, aceitamos um strength menor. Se não soubermos a role, exigimos strength alto.
-    const minStrength = role === 'host' ? 0.5 : role === 'unknown' ? 0.85 : 0.95;
+    // Se for host, aceitamos um strength menor.
+    // Para "unknown", tratamos como potencial host (threshold mais baixo) para não perder contexto útil.
+    // Para "guest", exigimos strength muito alto (0.95) pois guests raramente explicam soluções.
+    const minStrength = role === 'host' ? 0.5 : role === 'unknown' ? 0.6 : 0.95;
     if (strength < minStrength) {
       if (debug) {
         this.logger.debug('🧩 [SOLUTION_CONTEXT] Rejected: strength too low', {
@@ -2702,6 +2704,7 @@ export class FeedbackAggregatorService {
           strength: Math.round(strength * 100) / 100,
           minStrength,
           textPreview: text.slice(0, 60),
+          reason: 'Text does not appear to be a solution explanation (may be objection, question, or other type)',
         });
       }
       return;
@@ -2761,6 +2764,7 @@ export class FeedbackAggregatorService {
     }
 
     // Evitar disparar no próprio host (quando roles existem)
+    // Para "unknown", assumimos que pode ser guest e processamos (mais permissivo)
     const role = this.index.getParticipantRole(evt.meetingId, evt.participantId);
     if (debug) {
       this.logger.debug('🔍 [SOLUTION_UNDERSTOOD] Checking client reformulation', {
@@ -2771,6 +2775,7 @@ export class FeedbackAggregatorService {
         textLength: text.length,
       });
     }
+    // Apenas pular se for explicitamente host
     if (role === 'host') {
       if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Skipping host turn');
       return null;
