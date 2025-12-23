@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FeedbackEventPayload } from './feedback.types';
 
@@ -20,8 +21,8 @@ export class FeedbackRepository {
           id: evt.id,
           meetingId: evt.meetingId,
           participantId: evt.participantId,
-          type: evt.type as unknown as any, // Prisma enum inferred; TS maps string union
-          severity: evt.severity as unknown as any,
+          type: evt.type as Prisma.FeedbackType,
+          severity: evt.severity as Prisma.FeedbackSeverity,
           ts: new Date(evt.ts),
           windowStart: new Date(evt.window.start),
           windowEnd: new Date(evt.window.end),

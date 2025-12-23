@@ -59,6 +59,22 @@ enum FeedbackType {
   efeito_pos_interrupcao
   ritmo_acelerado
   ritmo_pausado
+  // A2E2 (emoções/estados primários)
+  hostilidade
+  tedio
+  confusao
+  serenidade
+  conexao
+  tristeza
+  estado_mental
+  // Feedbacks de vendas (semântica)
+  sales_price_window_open
+  sales_decision_signal
+  sales_ready_to_close
+  sales_objection_escalating
+  sales_conversation_stalling
+  sales_category_transition
+  sales_client_indecision
 }
 
 model FeedbackEvent {
