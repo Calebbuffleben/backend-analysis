@@ -1936,6 +1936,12 @@ export class FeedbackAggregatorService {
     return typeof until === 'number' && until > now;
   }
 
+  private cooldownRemainingMs(state: ParticipantState, type: string, now: number): number {
+    const until = state.cooldownUntilByType.get(type);
+    if (typeof until !== 'number') return 0;
+    return Math.max(0, until - now);
+  }
+
   private setCooldown(state: ParticipantState, type: string, now: number, ms: number): void {
     state.cooldownUntilByType.set(type, now + ms);
     state.lastFeedbackAt = now;
@@ -2432,7 +2438,11 @@ export class FeedbackAggregatorService {
     // ========================================================================
     // Evita spam de feedbacks de indecisão
     if (this.inCooldown(state, 'sales_client_indecision', now)) {
-      this.logger.debug('❌ [INDECISION] In cooldown ');
+      const remainingMs = this.cooldownRemainingMs(state, 'sales_client_indecision', now);
+      this.logger.debug('❌ [INDECISION] In cooldown', {
+        remainingMs,
+        remainingSec: Math.round(remainingMs / 1000),
+      });
       return null;
     }
     
@@ -2596,7 +2606,16 @@ export class FeedbackAggregatorService {
     // Gerar feedback
     // ========================================================================
     const window = this.window(state, now, 60000); // Últimos 60s
-    this.setCooldown(state, 'sales_client_indecision', now, 120000); // Cooldown de 2min
+    const indecisionCooldownMsRaw = process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS;
+    const indecisionCooldownMs = indecisionCooldownMsRaw
+      ? Number.parseInt(indecisionCooldownMsRaw, 10)
+      : 120000;
+    this.setCooldown(
+      state,
+      'sales_client_indecision',
+      now,
+      Number.isFinite(indecisionCooldownMs) ? indecisionCooldownMs : 120000,
+    );
     
     return {
       id: this.makeId(),
