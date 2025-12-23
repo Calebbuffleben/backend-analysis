@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import type { FeedbackSeverity, FeedbackType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FeedbackEventPayload } from './feedback.types';
 
@@ -21,8 +21,8 @@ export class FeedbackRepository {
           id: evt.id,
           meetingId: evt.meetingId,
           participantId: evt.participantId,
-          type: evt.type as Prisma.FeedbackType,
-          severity: evt.severity as Prisma.FeedbackSeverity,
+          type: evt.type as FeedbackType,
+          severity: evt.severity as FeedbackSeverity,
           ts: new Date(evt.ts),
           windowStart: new Date(evt.window.start),
           windowEnd: new Date(evt.window.end),
