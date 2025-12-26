@@ -194,18 +194,30 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
   private socket: Socket | null = null;
   private readonly pythonServiceUrl: string;
   private reconnectAttempts = 0;
-  private readonly maxReconnectAttempts = 10;
+  private readonly maxReconnectAttempts: number;
   private lastPongAtMs: number | null = null;
   private readonly pongTtlMs = 30_000;
   private healthPingInterval: NodeJS.Timeout | null = null;
 
   constructor(private readonly emitter: EventEmitter2) {
     // Socket.IO client adiciona automaticamente /socket.io/ ao conectar
-    this.pythonServiceUrl =
-      process.env.TEXT_ANALYSIS_SERVICE_URL || 'http://localhost:8001';
+    const rawUrl = process.env.TEXT_ANALYSIS_SERVICE_URL || 'http://localhost:8001https://text-analysis-production.up.railway.app';
+    // Defensive: prevent misconfig such as ".../socket.io" or ".../socket.io/" (we set path separately)
+    this.pythonServiceUrl = rawUrl
+      .trim()
+      .replace(/\/socket\.io\/?$/i, '')
+      .replace(/\/+$/g, '');
+
+    const rawMaxReconnectAttempts = process.env.TEXT_ANALYSIS_MAX_RECONNECT_ATTEMPTS;
+    const parsedMaxReconnectAttempts =
+      rawMaxReconnectAttempts !== undefined ? Number(rawMaxReconnectAttempts) : Number.POSITIVE_INFINITY;
+    this.maxReconnectAttempts =
+      Number.isFinite(parsedMaxReconnectAttempts) && parsedMaxReconnectAttempts > 0
+        ? parsedMaxReconnectAttempts
+        : Number.POSITIVE_INFINITY;
     
     this.logger.log(
-      `TextAnalysisService initialized. Will connect to: ${this.pythonServiceUrl}`,
+      `TextAnalysisService initialized. Will connect to: ${this.pythonServiceUrl} (maxReconnectAttempts=${this.maxReconnectAttempts === Number.POSITIVE_INFINITY ? 'Infinity' : this.maxReconnectAttempts})`,
     );
   }
 
