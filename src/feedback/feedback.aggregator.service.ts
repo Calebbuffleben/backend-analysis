@@ -4,6 +4,7 @@ import { FeedbackDeliveryService } from './feedback.delivery.service';
 import { FeedbackEventPayload, FeedbackIngestionEvent } from './feedback.types';
 import { ParticipantIndexService } from '../livekit/participant-index.service';
 import { runA2E2Pipeline } from './a2e2/pipeline/run-a2e2-pipeline';
+import { runTextAnalysisPipeline } from './a2e2/pipeline/run-text-analysis-pipeline';
 import { TextAnalysisResult } from '../pipeline/text-analysis.service';
 import type { DetectionContext, TextHistoryEntry } from './a2e2/types';
 
@@ -517,22 +518,13 @@ export class FeedbackAggregatorService {
     }
 
     // ========================================================================
-    // DETECÇÃO DE INDECISÃO DO CLIENTE (FASE 7)
+    // A2E2 - TEXT ANALYSIS (vendas): indecisão + solução compreendida
     // ========================================================================
-    // Detecta padrão consistente de indecisão do cliente baseado em:
-    // - Padrões semânticos (decision_postponement, conditional_language, lack_of_commitment)
-    // - Consistência temporal do padrão
-    // - Confidence combinado de múltiplos sinais
-    // - Frases representativas do histórico
-    // ========================================================================
-    const indecisionFeedback = this.detectClientIndecision(state, evt, now);
-    if (indecisionFeedback) {
-      this.delivery.publishToHosts(evt.meetingId, indecisionFeedback);
-    }
-
-    const solutionUnderstoodFeedback = this.detectClientSolutionUnderstood(state, evt, now);
-    if (solutionUnderstoodFeedback) {
-      this.delivery.publishToHosts(evt.meetingId, solutionUnderstoodFeedback);
+    // Executa independentemente da pipeline A2E2 principal (emoções/prosódia)
+    // para permitir que feedbacks de vendas sejam publicados junto com feedbacks emocionais
+    const salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
+    if (salesTextAnalysisFeedback) {
+      this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
     }
   }
 
@@ -686,6 +678,7 @@ export class FeedbackAggregatorService {
       now,
       getParticipantName: (mid: string, pid: string) => this.index.getParticipantName(mid, pid),
       getParticipantRole: (mid: string, pid: string) => this.index.getParticipantRole(mid, pid),
+      getSolutionContextEntries: (mid: string) => this.solutionContextByMeeting.get(mid) ?? [],
       inCooldown: (st: ParticipantState, type: string, n: number) => this.inCooldown(st, type, n),
       inGlobalCooldown: (st: ParticipantState, n: number) => this.inGlobalCooldown(st, n),
       setCooldown: (st: ParticipantState, type: string, n: number, ms: number) =>

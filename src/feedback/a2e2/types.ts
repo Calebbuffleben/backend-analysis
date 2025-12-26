@@ -223,6 +223,23 @@ export type DetectionContext = {
   now: number;
   getParticipantName: (meetingId: string, participantId: string) => string | undefined;
   getParticipantRole?: (meetingId: string, participantId: string) => 'host' | 'guest' | 'unknown' | string | undefined;
+  /**
+   * Acesso ao "solution context" do meeting (turnos explicativos do host), usado por detectores
+   * de reformulação do cliente (sales_solution_understood).
+   *
+   * O store é mantido no Aggregator (nível meeting) e exposto para a camada A2E2.
+   */
+  getSolutionContextEntries?: (
+    meetingId: string,
+  ) => Array<{
+    ts: number;
+    participantId: string;
+    role: 'host' | 'guest' | 'unknown' | string;
+    text: string;
+    embedding: number[];
+    keywords: string[];
+    strength: number;
+  }>;
   inCooldown: (state: ParticipantState, type: string, now: number) => boolean;
   inGlobalCooldown: (state: ParticipantState, now: number) => boolean;
   setCooldown: (state: ParticipantState, type: string, now: number, cooldownMs: number) => void;
