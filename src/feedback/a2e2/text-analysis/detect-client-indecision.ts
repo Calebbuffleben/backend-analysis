@@ -26,6 +26,13 @@ export class DetectClientIndecision {
     const participantId = ctx.participantId;
     const now = ctx.now;
 
+    // Só faz sentido detectar "indecisão do cliente" para o lado cliente (guest).
+    // Se o backend conseguir identificar o host, evitamos falso positivo no vendedor.
+    const role = ctx.getParticipantRole?.(meetingId, participantId);
+    if (role === 'host') {
+      return null;
+    }
+
     // Preencher nome do participante no mapa local (usado na montagem do payload).
     const participantName = ctx.getParticipantName(meetingId, participantId);
     if (participantName) {
@@ -102,13 +109,15 @@ export class DetectClientIndecision {
     // Requer pelo menos 5 chunks com categoria para análise confiável
     const aggregated = textAnalysis.sales_category_aggregated;
     const chunksCount = aggregated?.chunks_with_category ?? 0;
-    // 🧪 TESTE: Threshold reduzido de 5 para 1 chunk
-    const hasEnoughData = chunksCount >= 1;
+    const minChunksRaw = process.env.SALES_CLIENT_INDECISION_MIN_CHUNKS;
+    const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 5;
+    const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 5;
+    const hasEnoughData = chunksCount >= minChunks;
 
     this.logger.debug('📊 [INDECISION] Data volume check', {
       chunksCount,
       hasEnoughData,
-      threshold: 1,
+      threshold: minChunks,
     });
 
     if (!hasEnoughData) {
