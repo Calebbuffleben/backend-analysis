@@ -26,10 +26,13 @@ export class DetectClientIndecision {
     const participantId = ctx.participantId;
     const now = ctx.now;
 
+    this.logger.log(`🔴 [INDECISION] Detector called for ${meetingId}/${participantId}`);
+
     // Só faz sentido detectar "indecisão do cliente" para o lado cliente (guest).
     // Se o backend conseguir identificar o host, evitamos falso positivo no vendedor.
     const role = ctx.getParticipantRole?.(meetingId, participantId);
     if (role === 'host') {
+      this.logger.debug('❌ [INDECISION] Skipping host participant');
       return null;
     }
 
@@ -44,6 +47,9 @@ export class DetectClientIndecision {
     }
 
     const latestText = state.textAnalysis?.textHistory?.slice(-1)[0]?.text || '';
+
+    this.logger.log(`[INDECISION] Latest text: "${latestText.substring(0, 100)}..."`);
+    this.logger.log(`[INDECISION] Text history length: ${state.textAnalysis?.textHistory?.length || 0}`);
 
     // O detector só usa meetingId/participantId/text e lê o resto via state.textAnalysis.
     const evt = {
@@ -139,8 +145,11 @@ export class DetectClientIndecision {
     // Verificar se pelo menos um padrão foi detectado
     const hasPattern = Object.values(patterns).some(Boolean);
     if (!hasPattern) {
-      this.logger.debug('❌ [INDECISION] No patterns detected');
-      return null;
+    this.logger.log('❌ [INDECISION] No patterns detected - detailed analysis:');
+    this.logger.log(`[INDECISION] decision_postponement: ${patterns.decision_postponement}`);
+    this.logger.log(`[INDECISION] lack_of_commitment: ${patterns.lack_of_commitment}`);
+    this.logger.log(`[INDECISION] conditional_language: ${patterns.conditional_language}`);
+    return null;
     }
 
     // ========================================================================
