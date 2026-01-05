@@ -239,6 +239,14 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // Se já existe um socket mas não está conectado, limpar antes de criar novo
+    if (this.socket && !this.socket.connected) {
+      this.logger.warn('Socket exists but not connected, cleaning up before reconnecting');
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+    }
+
     // Log crítico para garantir visibilidade
     this.logger.log(`🔌 [CONNECTION] Connecting to Python text analysis service: ${this.pythonServiceUrl}`);
     this.logger.log(`[CONNECTION] Socket.IO will attempt connection with transports: websocket, polling`);
@@ -275,6 +283,23 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
 
       // Handshake de saúde (eventos customizados para evitar colisão com heartbeat interno)
       this.startHealthPingLoop();
+    });
+
+    // Listener para reconexão bem-sucedida
+    this.socket.on('reconnect', (attemptNumber: number) => {
+      this.logger.log(`🔄 Reconnected to Python service after ${attemptNumber} attempts`);
+      this.reconnectAttempts = 0;
+      this.startHealthPingLoop();
+    });
+
+    // Listener para tentativas de reconexão
+    this.socket.on('reconnect_attempt', (attemptNumber: number) => {
+      this.logger.warn(`🔄 Attempting to reconnect to Python service (attempt ${attemptNumber})`);
+    });
+
+    // Listener para falha na reconexão
+    this.socket.on('reconnect_failed', () => {
+      this.logger.error('❌ [CRITICAL] Failed to reconnect to Python service after all attempts');
     });
 
     const onAnyPong = (label: 'pong' | 'health_pong') => (data: { timestamp?: number; service?: string }) => {
