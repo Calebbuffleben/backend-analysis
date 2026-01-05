@@ -202,12 +202,16 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly emitter: EventEmitter2) {
     // Socket.IO client adiciona automaticamente /socket.io/ ao conectar
     const rawUrl = process.env.TEXT_ANALYSIS_SERVICE_URL || 'https://text-analysis-production.up.railway.app';
-    
+
+    this.logger.log(`[CONFIG] Raw TEXT_ANALYSIS_SERVICE_URL: ${rawUrl}`);
+
     // Defensive: prevent misconfig such as ".../socket.io" or ".../socket.io/" (we set path separately)
     this.pythonServiceUrl = rawUrl
       .trim()
       .replace(/\/socket\.io\/?$/i, '')
       .replace(/\/+$/g, '');
+
+    this.logger.log(`[CONFIG] Cleaned pythonServiceUrl: ${this.pythonServiceUrl}`);
 
     const rawMaxReconnectAttempts = process.env.TEXT_ANALYSIS_MAX_RECONNECT_ATTEMPTS;
     const parsedMaxReconnectAttempts =
@@ -234,14 +238,17 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async connect(): Promise<void> {
+    this.logger.log(`🔄 [CONNECT] Attempting to connect to Python service...`);
+    this.logger.log(`[CONNECT] Current socket state: exists=${!!this.socket}, connected=${this.socket?.connected ?? false}`);
+
     if (this.socket?.connected) {
-      this.logger.debug('Already connected to Python service');
+      this.logger.log('✅ [CONNECT] Already connected to Python service');
       return;
     }
 
-    // Se já existe um socket mas não está conectado, limpar antes de criar novo
-    if (this.socket && !this.socket.connected) {
-      this.logger.warn('Socket exists but not connected, cleaning up before reconnecting');
+    // Se já existe um socket, limpar completamente
+    if (this.socket) {
+      this.logger.log(`[CONNECT] Cleaning up existing socket...`);
       this.socket.removeAllListeners();
       this.socket.disconnect();
       this.socket = null;
@@ -506,6 +513,15 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
         },
       );
     }
+  }
+
+  /**
+   * Force reconnection to Python service
+   * Useful for manual reconnection when connection is lost
+   */
+  async forceReconnect(): Promise<void> {
+    this.logger.log('🔄 Force reconnection requested');
+    await this.connect();
   }
 
   isConnected(): boolean {
