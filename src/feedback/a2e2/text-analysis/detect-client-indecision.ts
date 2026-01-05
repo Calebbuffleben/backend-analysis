@@ -112,12 +112,12 @@ export class DetectClientIndecision {
     // ========================================================================
     // Verificar volume mínimo de dados
     // ========================================================================
-    // Requer pelo menos 5 chunks com categoria para análise confiável
+    // Requer pelo menos 2 chunks com categoria para análise mais responsiva
     const aggregated = textAnalysis.sales_category_aggregated;
     const chunksCount = aggregated?.chunks_with_category ?? 0;
     const minChunksRaw = process.env.SALES_CLIENT_INDECISION_MIN_CHUNKS;
-    const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 5;
-    const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 5;
+    const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 2;
+    const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 2;
     const hasEnoughData = chunksCount >= minChunks;
 
     this.logger.debug('📊 [INDECISION] Data volume check', {
@@ -170,12 +170,12 @@ export class DetectClientIndecision {
 
     this.logger.debug('📊 [INDECISION] Combined confidence', {
       confidence,
-      threshold: 0.5,
+      threshold: 0.3,
     });
 
-    // Apenas gera feedback se houver confiança mínima na detecção
-    if (confidence < 0.5) {
-      this.logger.debug('❌ [INDECISION] Confidence too low', { confidence, threshold: 0.5 });
+    // Apenas gera feedback se houver confiança mínima na detecção (mais permissivo)
+    if (confidence < 0.3) {
+      this.logger.debug('❌ [INDECISION] Confidence too low', { confidence, threshold: 0.3 });
       return null;
     }
 
@@ -412,6 +412,21 @@ export class DetectClientIndecision {
       contextualDecisionPostponement ||
       metricsDecisionPostponement ||
       lexicalDecisionPostponement;
+
+    // DEBUG: Log detailed decision_postponement analysis
+    this.logger.log(`[INDECISION] decision_postponement analysis:`, {
+      pythonDecisionPostponementFlag,
+      contextualDecisionPostponement,
+      metricsDecisionPostponement,
+      lexicalDecisionPostponement,
+      currentCategory,
+      isStallingDominant,
+      isStable,
+      isLowVelocity,
+      hasPostponementLexicon,
+      hasAnyConditionalKeywordSignal,
+      latestTextLower: latestTextLower.substring(0, 100),
+    });
 
     // ========================================================================
     // Padrão 2: Conditional Language
