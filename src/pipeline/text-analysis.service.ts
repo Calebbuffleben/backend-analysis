@@ -201,7 +201,7 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
 
   constructor(private readonly emitter: EventEmitter2) {
     // Socket.IO client adiciona automaticamente /socket.io/ ao conectar
-    const rawUrl = process.env.TEXT_ANALYSIS_SERVICE_URL || 'http://localhost:8001https://text-analysis-production.up.railway.app';
+    const rawUrl = process.env.TEXT_ANALYSIS_SERVICE_URL || 'https://text-analysis-production.up.railway.app';
     // Defensive: prevent misconfig such as ".../socket.io" or ".../socket.io/" (we set path separately)
     this.pythonServiceUrl = rawUrl
       .trim()
