@@ -344,6 +344,8 @@ export class DetectClientIndecision {
     const indecisionScore = indecisionMetrics?.indecision_score ?? 0;
     const postponementLikelihood = indecisionMetrics?.postponement_likelihood ?? 0;
     const conditionalLanguageScore = indecisionMetrics?.conditional_language_score ?? 0;
+    const currentCategory = textAnalysis.sales_category ?? null;
+    const latestTextLower = (textAnalysis.textHistory?.slice(-1)[0]?.text ?? '').toLowerCase();
 
     // ========================================================================
     // Padrão 1: Decision Postponement
@@ -360,8 +362,47 @@ export class DetectClientIndecision {
     const contextualDecisionPostponement = isStallingDominant && isStable && isLowVelocity;
     // 3. Métrica do Python (postponement_likelihood) acima de threshold
     const metricsDecisionPostponement = postponementLikelihood >= 0.6;
+    // 4. Heurística lexical (mais robusta para fala real): categoria stalling + termos explícitos de adiamento
+    // Obs: isso reduz a dependência de "confidence gap" do SBERT, que tende a ser baixo quando
+    // stalling vs closing_readiness ficam próximos (ex.: transcrição parcial como "decidir agora").
+    const postponementLexicon = [
+      'adiar',
+      'adiando',
+      'postergar',
+      'posterg',
+      'protelar',
+      'protelando',
+      'deixar para depois',
+      'deixar pra depois',
+      'vou deixar para depois',
+      'vou deixar pra depois',
+      'depois eu decido',
+      'depois a gente vê',
+      'mais para frente',
+      'mais pra frente',
+      'não agora',
+      'agora não',
+      'preciso de mais tempo',
+      'vou precisar de mais tempo',
+      'não consigo decidir agora',
+      'vou avaliar depois',
+      'vou ver depois',
+    ];
+    const hasPostponementLexicon = postponementLexicon.some((p) => latestTextLower.includes(p));
+    const hasAnyConditionalKeywordSignal =
+      conditionalKeywordsDetected.length > 0 ||
+      keywords.some((kw) =>
+        ['talvez', 'pensar', 'avaliar', 'depois', 'ver', 'consultar', 'depende', 'preciso'].some((ck) =>
+          kw.toLowerCase().includes(ck),
+        ),
+      );
+    const lexicalDecisionPostponement =
+      currentCategory === 'stalling' && (hasPostponementLexicon || hasAnyConditionalKeywordSignal);
     const decision_postponement =
-      pythonDecisionPostponementFlag || contextualDecisionPostponement || metricsDecisionPostponement;
+      pythonDecisionPostponementFlag ||
+      contextualDecisionPostponement ||
+      metricsDecisionPostponement ||
+      lexicalDecisionPostponement;
 
     // ========================================================================
     // Padrão 2: Conditional Language
@@ -408,15 +449,34 @@ export class DetectClientIndecision {
     // Verifica:
     // 1. Flag geral de indecisão do Python OU
     // 2. Análise contextual (baixa estabilidade + alta proporção de indecisão)
-    const pythonIndecisionFlag = flags?.indecision_detected ?? false;
+    // Nota: evitar depender diretamente de flags do Python para "lack_of_commitment":
+    // elas podem oscilar com transcrição parcial e causar "cliente hesitante" como único feedback.
+    // Preferimos sinais explícitos (lexical) e métricas/contexto.
     const stability = aggregated?.stability ?? 0;
     const distribution = aggregated?.category_distribution ?? {};
     const indecisionRatio = (distribution.stalling ?? 0) + (distribution.objection_soft ?? 0);
     const contextualLackOfCommitment = stability < 0.5 && indecisionRatio > 0.6;
     // 3. Métrica do Python (indecision_score) acima de threshold
-    const metricsLackOfCommitment = indecisionScore >= 0.6;
+    // Evitar interpretar "stalling" como "hesitação" por score quando não há sinais explícitos;
+    // para stalling, preferimos o padrão decision_postponement.
+    const metricsLackOfCommitment = indecisionScore >= 0.6 && currentCategory !== 'stalling';
+    // 4. Heurística lexical: frases explícitas de falta de compromisso
+    const lackOfCommitmentLexicon = [
+      'não consigo me comprometer',
+      'não vou me comprometer',
+      'não quero me comprometer',
+      'não tenho certeza',
+      'não estou certo',
+      'não estou certa',
+      'não estou seguro',
+      'não estou segura',
+      'não estou pronto',
+      'não estou pronta',
+      'não consigo decidir',
+    ];
+    const lexicalLackOfCommitment = lackOfCommitmentLexicon.some((p) => latestTextLower.includes(p));
     const lack_of_commitment =
-      pythonIndecisionFlag || contextualLackOfCommitment || metricsLackOfCommitment;
+      lexicalLackOfCommitment || contextualLackOfCommitment || metricsLackOfCommitment;
 
     return {
       decision_postponement,
