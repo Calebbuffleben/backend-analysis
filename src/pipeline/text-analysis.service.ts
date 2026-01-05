@@ -469,12 +469,13 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
     try {
       // Converter Buffer para base64 para envio via Socket.IO
       const audioBase64 = wavData.toString('base64');
+      const base64Size = audioBase64.length;
 
       this.logger.log(
-        `Sending audio chunk to Python: ${meetingId}/${participantId}/${track} (${wavData.length} bytes, ${sampleRate}Hz, ${channels}ch)`,
+        `Sending audio chunk to Python: ${meetingId}/${participantId}/${track} (${wavData.length} bytes WAV, ${base64Size} bytes base64, ${sampleRate}Hz, ${channels}ch)`,
       );
 
-      this.socket.emit('audio_chunk', {
+      const payload = {
         meetingId,
         participantId,
         track,
@@ -483,14 +484,26 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
         channels,
         timestamp: timestamp ?? Date.now(),
         language: language ?? 'pt',
-      });
+      };
+
+      this.logger.debug(
+        `[DIAGNOSTIC] About to emit audio_chunk event. Socket connected: ${this.socket?.connected}, Socket exists: ${!!this.socket}`,
+      );
+
+      this.socket.emit('audio_chunk', payload);
       
       this.logger.debug(
-        `✅ Audio chunk sent to Python for transcription: ${meetingId}/${participantId}/${track} (${wavData.length} bytes)`,
+        `✅ Audio chunk sent to Python for transcription: ${meetingId}/${participantId}/${track} (${wavData.length} bytes WAV, ${base64Size} bytes base64)`,
       );
     } catch (error) {
       this.logger.error(
         `❌ Failed to send audio chunk: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          errorType: error instanceof Error ? error.constructor.name : typeof error,
+          stack: error instanceof Error ? error.stack : undefined,
+          meetingId,
+          participantId,
+        },
       );
     }
   }
