@@ -202,6 +202,7 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly emitter: EventEmitter2) {
     // Socket.IO client adiciona automaticamente /socket.io/ ao conectar
     const rawUrl = process.env.TEXT_ANALYSIS_SERVICE_URL || 'https://text-analysis-production.up.railway.app';
+    
     // Defensive: prevent misconfig such as ".../socket.io" or ".../socket.io/" (we set path separately)
     this.pythonServiceUrl = rawUrl
       .trim()
@@ -223,6 +224,8 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     this.logger.log('🚀 TextAnalysisService onModuleInit called, attempting to connect...');
+    this.logger.log(`[CONNECTION] Target URL: ${this.pythonServiceUrl}`);
+    this.logger.log(`[CONNECTION] Environment variable TEXT_ANALYSIS_SERVICE_URL: ${process.env.TEXT_ANALYSIS_SERVICE_URL || 'NOT SET'}`);
     await this.connect();
   }
 
@@ -236,8 +239,10 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    this.logger.log(`🔌 Connecting to Python text analysis service: ${this.pythonServiceUrl}`);
-    this.logger.log(`[DIAGNOSTIC] Socket.IO will attempt connection with transports: websocket, polling`);
+    // Log crítico para garantir visibilidade
+    this.logger.log(`🔌 [CONNECTION] Connecting to Python text analysis service: ${this.pythonServiceUrl}`);
+    this.logger.log(`[CONNECTION] Socket.IO will attempt connection with transports: websocket, polling`);
+    this.logger.log(`[CONNECTION] Reconnection enabled: true, max attempts: ${this.maxReconnectAttempts === Number.POSITIVE_INFINITY ? '∞' : this.maxReconnectAttempts}`);
 
     try {
       // Configurações otimizadas para Railway/produção
@@ -355,15 +360,18 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
 
     this.socket.on('connect_error', (error: Error) => {
       this.reconnectAttempts++;
+      // Log crítico para garantir visibilidade em produção
       this.logger.error(
-        `❌ Failed to connect to Python service (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}): ${error.message}`,
+        `❌ [CRITICAL] Failed to connect to Python service (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts === Number.POSITIVE_INFINITY ? '∞' : this.maxReconnectAttempts}): ${error.message}`,
       );
-      // Log adicional para diagnóstico (agora como ERROR para garantir visibilidade)
       this.logger.error(`[DIAGNOSTIC] Connection error details:`, {
         url: this.pythonServiceUrl,
         errorType: error.constructor.name,
         errorMessage: error.message,
+        errorName: error.name,
         stack: error.stack,
+        reconnectAttempts: this.reconnectAttempts,
+        maxReconnectAttempts: this.maxReconnectAttempts,
       });
     });
   }
