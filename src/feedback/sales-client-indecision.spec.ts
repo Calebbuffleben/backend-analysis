@@ -73,9 +73,10 @@ describe('sales_client_indecision (contract)', () => {
     expect(indecision?.meetingId).toBe(meetingId);
     expect(indecision?.participantId).toBe('guest-1');
 
-    // Contract: indecision feedback should include at least one detected pattern and a confidence number.
-    expect((indecision?.metadata?.semantic_patterns_detected ?? []).length).toBeGreaterThan(0);
+    // Contract: indecision feedback should include indecision_active flag and a confidence number.
+    expect(indecision?.metadata?.indecision_active).toBe(true);
     expect(typeof indecision?.metadata?.confidence).toBe('number');
+    expect(typeof indecision?.metadata?.rationale).toBe('string');
   });
 
   test('does not publish sales_client_indecision when no indecision patterns are present', () => {
