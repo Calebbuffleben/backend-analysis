@@ -97,9 +97,9 @@ export interface FeedbackEventPayload {
     trend_strength?: number;
     // Campos específicos para detecção de indecisão do cliente
     confidence?: number;
-    semantic_patterns_detected?: string[];
+    indecision_active?: boolean;
+    rationale?: string;
     representative_phrases?: string[];
-    temporal_consistency?: boolean;
     /**
      * Métricas semânticas de indecisão vindas do serviço Python (quando disponíveis).
      *
