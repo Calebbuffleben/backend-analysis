@@ -4,6 +4,7 @@ import { FeedbackDeliveryService } from './feedback.delivery.service';
 import { FeedbackEventPayload, FeedbackIngestionEvent } from './feedback.types';
 import { ParticipantIndexService } from '../livekit/participant-index.service';
 import { runA2E2Pipeline } from './a2e2/pipeline/run-a2e2-pipeline';
+import { runTextAnalysisPipeline } from './a2e2/pipeline/run-text-analysis-pipeline';
 import { TextAnalysisResult } from '../pipeline/text-analysis.service';
 import type { DetectionContext } from './a2e2/types';
 
