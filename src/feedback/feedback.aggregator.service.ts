@@ -328,6 +328,15 @@ export class FeedbackAggregatorService {
     if (feedback) {
       this.delivery.publishToHosts(evt.meetingId, feedback);
     }
+
+    // ========================================================================
+    // HEURÍSTICAS DE FEEDBACK DE VENDAS (Baseadas em Sinais Semânticos)
+    // ========================================================================
+    // Executa pipeline independente de análise de texto (vendas)
+    const salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
+    if (salesTextAnalysisFeedback) {
+      this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
+    }
   }
 
   private updateStateWithTextAnalysis(
