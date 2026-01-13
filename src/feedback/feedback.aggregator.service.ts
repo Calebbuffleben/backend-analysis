@@ -368,22 +368,29 @@ export class FeedbackAggregatorService {
     state: ParticipantState,
     evt: TextAnalysisResult,
   ): void {
-    // Inicializar textHistory se não existir
-    if (!state.textAnalysis?.textHistory) {
+    // Inicializar textAnalysis se não existir
+    if (!state.textAnalysis) {
       state.textAnalysis = {
-        ...state.textAnalysis,
+        sentiment: { positive: 0, negative: 0, neutral: 0 },
+        keywords: [],
+        hasQuestion: false,
         textHistory: [],
       };
+    }
+
+    // Inicializar textHistory se não existir
+    if (!state.textAnalysis.textHistory) {
+      state.textAnalysis.textHistory = [];
     }
 
     // Adicionar entrada atual ao histórico
     const currentEntry = {
       timestamp: evt.timestamp,
       text: evt.text,
-      sales_category: evt.analysis.sales_category,
-      sales_category_confidence: evt.analysis.sales_category_confidence,
-      sales_category_intensity: evt.analysis.sales_category_intensity,
-      sales_category_ambiguity: evt.analysis.sales_category_ambiguity,
+      sales_category: evt.analysis.sales_category || undefined,
+      sales_category_confidence: evt.analysis.sales_category_confidence || undefined,
+      sales_category_intensity: evt.analysis.sales_category_intensity || undefined,
+      sales_category_ambiguity: evt.analysis.sales_category_ambiguity || undefined,
       sales_category_flags: evt.analysis.sales_category_flags,
       intent: evt.analysis.intent,
       intent_confidence: evt.analysis.intent_confidence,
@@ -393,9 +400,9 @@ export class FeedbackAggregatorService {
     };
 
     // Manter apenas os últimos 20 textos para não crescer indefinidamente
-    state.textAnalysis.textHistory!.push(currentEntry);
-    if (state.textAnalysis.textHistory!.length > 20) {
-      state.textAnalysis.textHistory!.shift(); // Remove o mais antigo
+    state.textAnalysis.textHistory.push(currentEntry);
+    if (state.textAnalysis.textHistory.length > 20) {
+      state.textAnalysis.textHistory.shift(); // Remove o mais antigo
     }
 
     // Atualizar campos principais
@@ -422,10 +429,10 @@ export class FeedbackAggregatorService {
       urgency: evt.analysis.urgency,
       embedding: evt.analysis.embedding,
       // Campos de vendas
-      sales_category: evt.analysis.sales_category,
-      sales_category_confidence: evt.analysis.sales_category_confidence,
-      sales_category_intensity: evt.analysis.sales_category_intensity,
-      sales_category_ambiguity: evt.analysis.sales_category_ambiguity,
+      sales_category: evt.analysis.sales_category || undefined,
+      sales_category_confidence: evt.analysis.sales_category_confidence || undefined,
+      sales_category_intensity: evt.analysis.sales_category_intensity || undefined,
+      sales_category_ambiguity: evt.analysis.sales_category_ambiguity || undefined,
       sales_category_flags: evt.analysis.sales_category_flags,
       sales_category_aggregated: undefined, // Será calculado pela detecção
       indecision_metrics: evt.analysis.indecision_metrics,
