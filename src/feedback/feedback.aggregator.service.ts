@@ -49,6 +49,30 @@ type ParticipantState = {
     sentiment_score?: number; // Score único
     urgency?: number;
     embedding?: number[];
+    // Histórico de textos para detecção episódica
+    textHistory?: Array<{
+      timestamp: number;
+      text: string;
+      sales_category?: string;
+      sales_category_confidence?: number;
+      sales_category_intensity?: number;
+      sales_category_ambiguity?: number;
+      sales_category_flags?: any;
+      intent?: string;
+      intent_confidence?: number;
+      keywords?: string[];
+      conditional_keywords_detected?: string[];
+      indecision_metrics?: any;
+    }>;
+    // Campos de vendas agregados
+    sales_category?: string;
+    sales_category_confidence?: number;
+    sales_category_intensity?: number;
+    sales_category_ambiguity?: number;
+    sales_category_flags?: any;
+    sales_category_aggregated?: any;
+    indecision_metrics?: any;
+    conditional_keywords_detected?: string[];
   };
 };
 
@@ -344,7 +368,39 @@ export class FeedbackAggregatorService {
     state: ParticipantState,
     evt: TextAnalysisResult,
   ): void {
+    // Inicializar textHistory se não existir
+    if (!state.textAnalysis?.textHistory) {
+      state.textAnalysis = {
+        ...state.textAnalysis,
+        textHistory: [],
+      };
+    }
+
+    // Adicionar entrada atual ao histórico
+    const currentEntry = {
+      timestamp: evt.timestamp,
+      text: evt.text,
+      sales_category: evt.analysis.sales_category,
+      sales_category_confidence: evt.analysis.sales_category_confidence,
+      sales_category_intensity: evt.analysis.sales_category_intensity,
+      sales_category_ambiguity: evt.analysis.sales_category_ambiguity,
+      sales_category_flags: evt.analysis.sales_category_flags,
+      intent: evt.analysis.intent,
+      intent_confidence: evt.analysis.intent_confidence,
+      keywords: evt.analysis.keywords,
+      conditional_keywords_detected: evt.analysis.conditional_keywords_detected,
+      indecision_metrics: evt.analysis.indecision_metrics,
+    };
+
+    // Manter apenas os últimos 20 textos para não crescer indefinidamente
+    state.textAnalysis.textHistory!.push(currentEntry);
+    if (state.textAnalysis.textHistory!.length > 20) {
+      state.textAnalysis.textHistory!.shift(); // Remove o mais antigo
+    }
+
+    // Atualizar campos principais
     state.textAnalysis = {
+      ...state.textAnalysis,
       sentiment: {
         positive: evt.analysis.sentiment === 'positive' ? evt.analysis.sentiment_score : 0,
         negative: evt.analysis.sentiment === 'negative' ? evt.analysis.sentiment_score : 0,
@@ -365,6 +421,15 @@ export class FeedbackAggregatorService {
       sentiment_score: evt.analysis.sentiment_score,
       urgency: evt.analysis.urgency,
       embedding: evt.analysis.embedding,
+      // Campos de vendas
+      sales_category: evt.analysis.sales_category,
+      sales_category_confidence: evt.analysis.sales_category_confidence,
+      sales_category_intensity: evt.analysis.sales_category_intensity,
+      sales_category_ambiguity: evt.analysis.sales_category_ambiguity,
+      sales_category_flags: evt.analysis.sales_category_flags,
+      sales_category_aggregated: undefined, // Será calculado pela detecção
+      indecision_metrics: evt.analysis.indecision_metrics,
+      conditional_keywords_detected: evt.analysis.conditional_keywords_detected,
     };
 
     this.logger.debug(
