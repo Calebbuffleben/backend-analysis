@@ -112,12 +112,12 @@ export class DetectClientIndecision {
     // ========================================================================
     // Verificar volume mínimo de dados
     // ========================================================================
-    // Requer pelo menos 2 chunks com categoria para análise mais responsiva
+    // Requer pelo menos 1 chunk com categoria para análise responsiva (mais permissivo)
     const aggregated = textAnalysis.sales_category_aggregated;
     const chunksCount = aggregated?.chunks_with_category ?? 0;
     const minChunksRaw = process.env.SALES_CLIENT_INDECISION_MIN_CHUNKS;
-    const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 2;
-    const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 2;
+    const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 1;
+    const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 1;
     const hasEnoughData = chunksCount >= minChunks;
 
     this.logger.debug('📊 [INDECISION] Data volume check', {
@@ -127,13 +127,16 @@ export class DetectClientIndecision {
     });
 
     if (!hasEnoughData) {
-      this.logger.debug('❌ [INDECISION] Not enough data');
+      this.logger.debug('❌ [INDECISION] Not enough data - waiting for more chunks');
       return null;
     }
+
+    this.logger.log(`[INDECISION] ✅ Has enough data (${chunksCount}/${minChunks}) - proceeding with analysis`);
 
     // ========================================================================
     // Detectar padrões semânticos
     // ========================================================================
+    this.logger.log('[INDECISION] 🔍 Calling detectIndecisionPatterns...');
     const patterns = this.detectIndecisionPatterns(state);
 
     this.logger.debug('🔍 [INDECISION] Patterns detected', {
@@ -501,6 +504,15 @@ export class DetectClientIndecision {
     const lexicalLackOfCommitment = lackOfCommitmentLexicon.some((p) => latestTextLower.includes(p));
     const lack_of_commitment =
       lexicalLackOfCommitment || contextualLackOfCommitment || metricsLackOfCommitment;
+
+    // LOG FINAL RESULTS
+    this.logger.log(`[INDECISION] Pattern detection results:`, {
+      decision_postponement,
+      conditional_language,
+      lack_of_commitment,
+      currentCategory,
+      latestTextLower: latestTextLower.substring(0, 100),
+    });
 
     return {
       decision_postponement,
