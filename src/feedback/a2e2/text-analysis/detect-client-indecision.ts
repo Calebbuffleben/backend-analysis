@@ -465,11 +465,21 @@ export class DetectClientIndecision {
       return true;
     }
     
+    // Detectar repetições excessivas (ex: "O que é o que é o que é...")
+    const words = textLower.split(/\s+/).filter(w => w.length > 0);
+    if (words.length > 2) {
+      const uniqueWords = new Set(words);
+      const repetitionRatio = 1 - (uniqueWords.size / words.length);
+      // Mais de 50% de repetição indica texto repetitivo/não semântico
+      if (repetitionRatio > 0.5) {
+        return true;
+      }
+    }
+    
     // Textos muito curtos (< 10 caracteres) sem palavras significativas
     if (textLower.length < 10) {
       // Lista de palavras muito comuns que não agregam significado
       const noiseWords = ['ok', 'ah', 'hmm', 'uh', 'é', 'sim', 'não', 'tá', 'entendi'];
-      const words = textLower.split(/\s+/).filter(w => w.length > 0);
       if (words.length <= 1 && noiseWords.some(noise => textLower.includes(noise))) {
         return true;
       }
