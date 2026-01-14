@@ -15,6 +15,8 @@ export class DetectClientIndecision {
   private readonly logger = new Logger(DetectClientIndecision.name);
   private readonly byMeeting = new Map<string, MeetingMaps>();
 
+
+  
   /**
    * API pública no padrão A2E2: (state, ctx) -> FeedbackEventPayload | null
    *
