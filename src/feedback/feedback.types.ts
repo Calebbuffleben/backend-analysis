@@ -101,6 +101,16 @@ export interface FeedbackEventPayload {
     representative_phrases?: string[];
     temporal_consistency?: boolean;
     /**
+     * Número de sinais válidos detectados na janela curta de chunks (3-5).
+     * Útil para entender quantos chunks de indecisão foram encontrados.
+     */
+    valid_signals_count?: number;
+    /**
+     * Confiança média dos sinais válidos detectados.
+     * Calculada como média das confianças dos chunks válidos na janela.
+     */
+    valid_signals_average_confidence?: number;
+    /**
      * Métricas semânticas de indecisão vindas do serviço Python (quando disponíveis).
      *
      * Útil para debug no frontend e para explicar por que o feedback disparou.

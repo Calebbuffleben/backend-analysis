@@ -110,18 +110,16 @@ export class DetectClientIndecision {
     }
 
     // ========================================================================
-    // Verificar volume mínimo de dados
+    // Verificar volume mínimo de dados (usar textHistory diretamente)
     // ========================================================================
-    // Requer pelo menos 1 chunk com categoria para análise responsiva (mais permissivo)
-    const aggregated = textAnalysis.sales_category_aggregated;
-    const chunksCount = aggregated?.chunks_with_category ?? 0;
+    const textHistory = textAnalysis.textHistory ?? [];
     const minChunksRaw = process.env.SALES_CLIENT_INDECISION_MIN_CHUNKS;
-    const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 1;
-    const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 1;
-    const hasEnoughData = chunksCount >= minChunks;
+    const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 2;
+    const minChunks = Number.isFinite(minChunksParsed) ? Math.max(2, minChunksParsed) : 2;
+    const hasEnoughData = textHistory.length >= minChunks;
 
     this.logger.debug('📊 [INDECISION] Data volume check', {
-      chunksCount,
+      textHistoryLength: textHistory.length,
       hasEnoughData,
       threshold: minChunks,
     });
@@ -131,54 +129,33 @@ export class DetectClientIndecision {
       return null;
     }
 
-    this.logger.log(`[INDECISION] ✅ Has enough data (${chunksCount}/${minChunks}) - proceeding with analysis`);
+    this.logger.log(`[INDECISION] ✅ Has enough data (${textHistory.length}/${minChunks}) - proceeding with analysis`);
 
     // ========================================================================
-    // Detectar padrões semânticos
+    // Detectar indecisão ativa (janela curta de chunks)
     // ========================================================================
-    this.logger.log('[INDECISION] 🔍 Calling detectIndecisionPatterns...');
-    const patterns = this.detectIndecisionPatterns(state);
+    const activeIndecision = this.detectActiveIndecision(state, 5);
 
-    this.logger.debug('🔍 [INDECISION] Patterns detected', {
-      decision_postponement: patterns.decision_postponement,
-      conditional_language: patterns.conditional_language,
-      lack_of_commitment: patterns.lack_of_commitment,
-    });
-
-    // Verificar se pelo menos um padrão foi detectado
-    const hasPattern = Object.values(patterns).some(Boolean);
-    if (!hasPattern) {
-    this.logger.log('❌ [INDECISION] No patterns detected - detailed analysis:');
-    this.logger.log(`[INDECISION] decision_postponement: ${patterns.decision_postponement}`);
-    this.logger.log(`[INDECISION] lack_of_commitment: ${patterns.lack_of_commitment}`);
-    this.logger.log(`[INDECISION] conditional_language: ${patterns.conditional_language}`);
-    return null;
+    if (!activeIndecision || !activeIndecision.isActive) {
+      this.logger.debug('❌ [INDECISION] No active indecision detected', {
+        signalsCount: activeIndecision?.signalsCount ?? 0,
+        averageConfidence: activeIndecision?.averageConfidence ?? 0,
+      });
+      return null;
     }
 
-    // ========================================================================
-    // Calcular consistência temporal
-    // ========================================================================
-    // Verifica se o padrão se mantém consistente ao longo do tempo
-    const temporalConsistency = this.calculateTemporalConsistency(state, now, 60000);
+    // Confidence passa a ser a média dos sinais válidos
+    const confidence = activeIndecision.averageConfidence;
 
-    this.logger.debug('⏱️ [INDECISION] Temporal consistency', {
-      temporalConsistency,
-    });
-
-    // ========================================================================
-    // Calcular confidence combinado
-    // ========================================================================
-    // Combina múltiplos sinais para determinar confiança na detecção
-    const confidence = this.calculateIndecisionConfidence(state, patterns, temporalConsistency);
-
-    this.logger.debug('📊 [INDECISION] Combined confidence', {
+    this.logger.debug('📊 [INDECISION] Active indecision confidence', {
       confidence,
-      threshold: 0.3,
+      threshold: 0.25,
+      signalsCount: activeIndecision.signalsCount,
     });
 
-    // Apenas gera feedback se houver confiança mínima na detecção (mais permissivo)
-    if (confidence < 0.3) {
-      this.logger.debug('❌ [INDECISION] Confidence too low', { confidence, threshold: 0.3 });
+    // Threshold mínimo de confiança
+    if (confidence < 0.25) {
+      this.logger.debug('❌ [INDECISION] Confidence too low', { confidence, threshold: 0.25 });
       return null;
     }
 
@@ -190,10 +167,9 @@ export class DetectClientIndecision {
     // não deve bloquear o envio do feedback quando os padrões já foram detectados).
     let representativePhrases = this.extractRepresentativePhrases(
       state,
-      now,
-      60000, // Últimos 60s
+      5,     // Últimos 5 chunks
       5,     // Máximo 5 frases
-      0.1    // Confiança mínima
+      0.15   // Confiança mínima
     );
 
     // Fallback: se não houver frases no histórico (ex.: confidence muito baixo),
@@ -217,8 +193,7 @@ export class DetectClientIndecision {
 
     this.logger.log('✅ [INDECISION] All conditions met! Generating feedback...', {
       confidence,
-      patterns,
-      temporalConsistency,
+      signalsCount: activeIndecision.signalsCount,
       phrasesCount: representativePhrases.length,
     });
 
@@ -228,50 +203,25 @@ export class DetectClientIndecision {
     });
 
     // ========================================================================
-    // Construir lista de padrões detectados (para metadata)
-    // ========================================================================
-    const patternsDetected = Object.entries(patterns)
-      .filter(([, detected]) => detected)
-      .map(([pattern]) => pattern);
-
-    // ========================================================================
     // Construir mensagem curta e direta
     // ========================================================================
-    let message: string;
-
-    if (patterns.decision_postponement && patterns.lack_of_commitment) {
-      message = '⏳ Cliente adiando e evitando compromisso';
-    } else if (patterns.decision_postponement) {
-      message = '⏳ Cliente adiando a decisão';
-    } else if (patterns.lack_of_commitment) {
-      message = '🤔 Cliente hesitante';
-    } else if (patterns.conditional_language) {
-      message = '💭 Indecisão detectada';
-    } else {
-      message = '⚠️ Sinais de indecisão';
-    }
+    // Mensagem simplificada baseada na indecisão ativa detectada
+    const message = '⏳ Cliente demonstrando indecisão';
 
     // ========================================================================
     // Construir tips curtas e práticas (máximo 2)
     // ========================================================================
     const tips: string[] = [];
 
-    if (patterns.decision_postponement) {
+    // Tip baseado no número de sinais detectados
+    if (activeIndecision.signalsCount >= 3) {
       tips.push('Crie urgência ou ofereça incentivo');
-    } else if (patterns.lack_of_commitment) {
+    } else {
       tips.push('Pergunte o que está travando');
-    } else if (patterns.conditional_language) {
-      tips.push('Descubra a condição real');
     }
 
-    // Adicionar uma dica de ação se tiver espaço
-    if (tips.length < 2) {
-      if (temporalConsistency) {
-        tips.push('Mude a abordagem');
-      } else {
-        tips.push('Proponha próximo passo concreto');
-      }
-    }
+    // Adicionar uma dica de ação
+    tips.push('Proponha próximo passo concreto');
 
     // ========================================================================
     // Gerar feedback
@@ -299,12 +249,11 @@ export class DetectClientIndecision {
       tips,
       metadata: {
         confidence: Math.round(confidence * 100) / 100, // Arredondar para 2 casas decimais
-        semantic_patterns_detected: patternsDetected,
+        valid_signals_count: activeIndecision.signalsCount,
+        valid_signals_average_confidence: Math.round(activeIndecision.averageConfidence * 100) / 100,
         representative_phrases: representativePhrases,
-        temporal_consistency: temporalConsistency,
         sales_category: textAnalysis.sales_category ?? undefined,
         sales_category_confidence: textAnalysis.sales_category_confidence ?? undefined,
-        sales_category_aggregated: aggregated ?? undefined,
         indecision_metrics: textAnalysis.indecision_metrics ?? undefined,
         conditional_keywords_detected: textAnalysis.conditional_keywords_detected ?? undefined,
       },
@@ -518,6 +467,162 @@ export class DetectClientIndecision {
       decision_postponement,
       conditional_language,
       lack_of_commitment,
+    };
+  }
+
+  /**
+   * Verifica se chunk é não semântico (ruído, mensagens de sistema, tempo restante).
+   * 
+   * Padrões detectados:
+   * - "X segundos restantes" / "X minutos restantes"
+   * - Mensagens de sistema curtas e sem contexto
+   * - Textos muito curtos sem palavras significativas
+   * 
+   * @param text Texto do chunk
+   * @returns true se chunk for não semântico
+   */
+  private isNonSemanticChunk(text: string): boolean {
+    const textLower = text.toLowerCase().trim();
+    
+    // Padrão: "X segundos/minutos restantes"
+    const timeRemainingPattern = /\d+\s*(segundos?|minutos?)\s*restantes?/i;
+    if (timeRemainingPattern.test(textLower)) {
+      return true;
+    }
+    
+    // Textos muito curtos (< 10 caracteres) sem palavras significativas
+    if (textLower.length < 10) {
+      // Lista de palavras muito comuns que não agregam significado
+      const noiseWords = ['ok', 'ah', 'hmm', 'uh', 'é', 'sim', 'não', 'tá', 'entendi'];
+      const words = textLower.split(/\s+/).filter(w => w.length > 0);
+      if (words.length <= 1 && noiseWords.some(noise => textLower.includes(noise))) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Detecta indecisão ativa baseada em janela curta de chunks (3-5).
+   * 
+   * Regras:
+   * - Avalia apenas últimos 3-5 chunks (não janela temporal)
+   * - Ignora chunks não semânticos (tempo restante, mensagens de sistema)
+   * - Chunk válido se: categoria ∈ {stalling, objection_soft} E confiança ≥ 0.15
+   * - Indecisão ativa se: ≥ 2 sinais válidos E confiança média ≥ 0.25
+   * 
+   * @param state Estado do participante
+   * @param maxChunks Número máximo de chunks a avaliar (padrão: 5)
+   * @returns Objeto com informações sobre indecisão ativa ou null
+   */
+  private detectActiveIndecision(
+    state: ParticipantState,
+    maxChunks: number = 5
+  ): {
+    isActive: boolean;
+    validSignals: Array<{ text: string; category: string; confidence: number }>;
+    averageConfidence: number;
+    signalsCount: number;
+  } | null {
+    const textAnalysis = state.textAnalysis;
+    if (!textAnalysis) {
+      return null;
+    }
+
+    const textHistory = textAnalysis.textHistory ?? [];
+    if (textHistory.length === 0) {
+      return null;
+    }
+
+    const indecisionCategories = ['stalling', 'objection_soft'];
+    const minConfidence = 0.15; // Threshold mais permissivo
+    const minSignals = 2; // Mínimo de sinais válidos
+    const minAverageConfidence = 0.25; // Confiança média mínima
+
+    // ========================================================================
+    // Obter últimos N chunks (mais recentes primeiro)
+    // ========================================================================
+    const recentChunks = textHistory.slice(-maxChunks);
+
+    // ========================================================================
+    // Filtrar chunks não semânticos e extrair sinais válidos
+    // ========================================================================
+    const validSignals: Array<{ text: string; category: string; confidence: number }> = [];
+
+    for (const entry of recentChunks) {
+      // Ignorar chunks não semânticos
+      if (this.isNonSemanticChunk(entry.text)) {
+        continue;
+      }
+
+      // Verificar se tem categoria válida
+      if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
+        continue;
+      }
+
+      // Verificar confiança mínima
+      const confidence = entry.sales_category_confidence ?? 0;
+      if (confidence < minConfidence) {
+        continue;
+      }
+
+      // Chunk válido!
+      validSignals.push({
+        text: entry.text,
+        category: entry.sales_category,
+        confidence,
+      });
+    }
+
+    // ========================================================================
+    // Verificar se há indecisão ativa
+    // ========================================================================
+    const signalsCount = validSignals.length;
+    
+    if (signalsCount < minSignals) {
+      this.logger.debug('🔍 [ACTIVE_INDECISION] Not enough valid signals', {
+        signalsCount,
+        minSignals,
+        validSignals: validSignals.map(s => ({ category: s.category, confidence: s.confidence })),
+      });
+      return {
+        isActive: false,
+        validSignals,
+        averageConfidence: 0,
+        signalsCount,
+      };
+    }
+
+    // Calcular confiança média
+    const averageConfidence = validSignals.reduce((sum, s) => sum + s.confidence, 0) / signalsCount;
+
+    if (averageConfidence < minAverageConfidence) {
+      this.logger.debug('🔍 [ACTIVE_INDECISION] Average confidence too low', {
+        averageConfidence,
+        minAverageConfidence,
+        signalsCount,
+      });
+      return {
+        isActive: false,
+        validSignals,
+        averageConfidence,
+        signalsCount,
+      };
+    }
+
+    // Indecisão ativa detectada!
+    this.logger.debug('✅ [ACTIVE_INDECISION] Active indecision detected', {
+      signalsCount,
+      averageConfidence,
+      validSignals: validSignals.map(s => ({ category: s.category, confidence: s.confidence })),
+    });
+
+    return {
+      isActive: true,
+      validSignals,
+      averageConfidence,
+      signalsCount,
     };
   }
 
@@ -787,24 +892,25 @@ export class DetectClientIndecision {
 
   private extractRepresentativePhrases(
     state: ParticipantState,
-    now: number,
-    windowMs: number = 60000, // Últimos 60 segundos
+    maxChunks: number = 5, // Últimos N chunks
     maxPhrases: number = 5,
-    minConfidence: number = 0.01 // 🧪 TESTE: Reduzido de 0.6 para 0.01
+    minConfidence: number = 0.15 // Threshold mais permissivo
   ): string[] {
     const textHistory = state.textAnalysis?.textHistory ?? [];
     if (textHistory.length === 0) {
       return [];
     }
 
-    const cutoffTime = now - windowMs;
     const indecisionCategories = ['stalling', 'objection_soft'];
 
-    // Filtrar textos de indecisão dentro da janela temporal
-    const indecisionTexts = textHistory
+    // Obter últimos N chunks (mais recentes primeiro)
+    const recentChunks = textHistory.slice(-maxChunks);
+
+    // Filtrar textos de indecisão (ignorar chunks não semânticos)
+    const indecisionTexts = recentChunks
       .filter(entry => {
-        // Verificar timestamp (deve estar dentro da janela temporal)
-        if (entry.timestamp < cutoffTime) {
+        // Ignorar chunks não semânticos
+        if (this.isNonSemanticChunk(entry.text)) {
           return false;
         }
 
