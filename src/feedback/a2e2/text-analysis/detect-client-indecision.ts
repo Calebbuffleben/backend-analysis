@@ -110,30 +110,10 @@ export class DetectClientIndecision {
     }
 
     // ========================================================================
-    // Verificar volume mínimo de dados (usar textHistory diretamente)
-    // ========================================================================
-    const textHistory = textAnalysis.textHistory ?? [];
-    const minChunksRaw = process.env.SALES_CLIENT_INDECISION_MIN_CHUNKS;
-    const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 2;
-    const minChunks = Number.isFinite(minChunksParsed) ? Math.max(2, minChunksParsed) : 2;
-    const hasEnoughData = textHistory.length >= minChunks;
-
-    this.logger.debug('📊 [INDECISION] Data volume check', {
-      textHistoryLength: textHistory.length,
-      hasEnoughData,
-      threshold: minChunks,
-    });
-
-    if (!hasEnoughData) {
-      this.logger.debug('❌ [INDECISION] Not enough data - waiting for more chunks');
-      return null;
-    }
-
-    this.logger.log(`[INDECISION] ✅ Has enough data (${textHistory.length}/${minChunks}) - proceeding with analysis`);
-
-    // ========================================================================
     // Detectar indecisão ativa (janela curta de chunks)
     // ========================================================================
+    // Nota: detectActiveIndecision() já valida se há chunks suficientes
+    // e se há ≥ 1 sinal válido, então não precisamos verificar antes
     const activeIndecision = this.detectActiveIndecision(state, 5);
 
     if (!activeIndecision || !activeIndecision.isActive) {
@@ -145,19 +125,14 @@ export class DetectClientIndecision {
     }
 
     // Confidence passa a ser a média dos sinais válidos
+    // Nota: detectActiveIndecision() já garante que se isActive: true,
+    // então averageConfidence >= 0.25, então não precisamos verificar novamente
     const confidence = activeIndecision.averageConfidence;
 
     this.logger.debug('📊 [INDECISION] Active indecision confidence', {
       confidence,
-      threshold: 0.25,
       signalsCount: activeIndecision.signalsCount,
     });
-
-    // Threshold mínimo de confiança
-    if (confidence < 0.25) {
-      this.logger.debug('❌ [INDECISION] Confidence too low', { confidence, threshold: 0.25 });
-      return null;
-    }
 
     // ========================================================================
     // Extrair frases representativas
@@ -510,7 +485,7 @@ export class DetectClientIndecision {
    * - Avalia apenas últimos 3-5 chunks (não janela temporal)
    * - Ignora chunks não semânticos (tempo restante, mensagens de sistema)
    * - Chunk válido se: categoria ∈ {stalling, objection_soft} E confiança ≥ 0.15
-   * - Indecisão ativa se: ≥ 2 sinais válidos E confiança média ≥ 0.25
+   * - Indecisão ativa se: ≥ 1 sinal válido E confiança média ≥ 0.25
    * 
    * @param state Estado do participante
    * @param maxChunks Número máximo de chunks a avaliar (padrão: 5)
@@ -532,12 +507,13 @@ export class DetectClientIndecision {
 
     const textHistory = textAnalysis.textHistory ?? [];
     if (textHistory.length === 0) {
+      this.logger.debug('🔍 [ACTIVE_INDECISION] No text history');
       return null;
     }
 
     const indecisionCategories = ['stalling', 'objection_soft'];
     const minConfidence = 0.15; // Threshold mais permissivo
-    const minSignals = 2; // Mínimo de sinais válidos
+    const minSignals = 1; // Mínimo de sinais válidos
     const minAverageConfidence = 0.25; // Confiança média mínima
 
     // ========================================================================
@@ -545,29 +521,63 @@ export class DetectClientIndecision {
     // ========================================================================
     const recentChunks = textHistory.slice(-maxChunks);
 
+    this.logger.debug('🔍 [ACTIVE_INDECISION] Starting analysis', {
+      totalHistoryLength: textHistory.length,
+      recentChunksCount: recentChunks.length,
+      maxChunks,
+      minSignals,
+      minConfidence,
+      minAverageConfidence,
+      indecisionCategories,
+    });
+
     // ========================================================================
     // Filtrar chunks não semânticos e extrair sinais válidos
     // ========================================================================
     const validSignals: Array<{ text: string; category: string; confidence: number }> = [];
 
+    this.logger.debug('🔍 [ACTIVE_INDECISION] Analyzing chunks', {
+      totalChunks: recentChunks.length,
+      maxChunks,
+    });
+
     for (const entry of recentChunks) {
       // Ignorar chunks não semânticos
       if (this.isNonSemanticChunk(entry.text)) {
+        this.logger.debug('🔍 [ACTIVE_INDECISION] Skipping non-semantic chunk', {
+          text: entry.text.substring(0, 50),
+        });
         continue;
       }
 
       // Verificar se tem categoria válida
       if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
+        this.logger.debug('🔍 [ACTIVE_INDECISION] Skipping chunk - invalid category', {
+          category: entry.sales_category,
+          validCategories: indecisionCategories,
+          text: entry.text.substring(0, 50),
+        });
         continue;
       }
 
       // Verificar confiança mínima
       const confidence = entry.sales_category_confidence ?? 0;
       if (confidence < minConfidence) {
+        this.logger.debug('🔍 [ACTIVE_INDECISION] Skipping chunk - low confidence', {
+          confidence,
+          minConfidence,
+          category: entry.sales_category,
+          text: entry.text.substring(0, 50),
+        });
         continue;
       }
 
       // Chunk válido!
+      this.logger.debug('✅ [ACTIVE_INDECISION] Valid signal found', {
+        category: entry.sales_category,
+        confidence,
+        text: entry.text.substring(0, 50),
+      });
       validSignals.push({
         text: entry.text,
         category: entry.sales_category,
