@@ -127,10 +127,6 @@ export class AudioPipelineService {
         ? this.buildWav(processedPcm, this.humeTargetSampleRate, this.humeTargetChannels)
         : this.buildWav(processedPcm, this.humeTargetSampleRate, this.humeTargetChannels);
     await this.appendLocalLog(meta, wavBody.length);
-    this.logger.log(
-      `Streaming to Hume: format=audio/wav(PCM16LE) sr=${this.humeTargetSampleRate} ch=${this.humeTargetChannels} ` +
-        `bytes=${wavBody.length} meetingId=${meta.meetingId} participant=${meta.participant} track=${meta.track}`,
-    );
     await this.hume.sendChunk(
       {
         meetingId: meta.meetingId,

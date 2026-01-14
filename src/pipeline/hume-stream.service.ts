@@ -61,9 +61,6 @@ export class HumeStreamService implements OnModuleDestroy {
       const participantRole = this.participantIndex.getParticipantRole(meetingId, participant);
       const speechDetected = Number.isFinite(rmsDbfs) ? rmsDbfs > -50 : false;
       
-      // DEBUG: Log audio level to diagnose "No speech detected" issues (ALWAYS log to debug)
-      this.logger.log(`[Hume][AUDIO] RMS: ${rmsDbfs} dBFS (isFinite=${Number.isFinite(rmsDbfs)}, speech=${speechDetected ? 'YES' : 'NO'})`);
-      
       const evt: FeedbackIngestionEvent = {
         version: 1,
         meetingId,
@@ -86,30 +83,17 @@ export class HumeStreamService implements OnModuleDestroy {
       };
       this.emitter.emit('feedback.ingestion', evt);
     } catch (e) {
-      this.logger.warn(`[Hume][RMS] failed to compute rms: ${e instanceof Error ? e.message : String(e)}`);
+      // Silent error handling
     }
     // Always include models with each data payload to satisfy Hume's "models configured" requirement
     const payload = this.buildDataPayload(wavChunk);
-    // Debug what we are about to send
-    try {
-      const info = this.describePayload(payload);
-      const b64 = (JSON.parse(payload) as { data?: string }).data ?? '';
-      const preview = b64.length > 80 ? `${b64.slice(0, 80)}...` : b64;
-      this.logger.log(
-        `[Hume][SEND] ${info} wavBytes=${wavChunk.length} base64Len=${b64.length} preview="${preview}"`,
-      );
-    } catch (_e) {}
     if (!conn.isOpen) {
       conn.pending.push(payload);
       return;
     }
     try {
       conn.ws.send(payload);
-      const info = this.describePayload(payload);
-      this.logger.log(`[Hume][SENT] ${info} dispatched`);
     } catch (e) {
-      const info = this.describePayload(payload);
-      this.logger.error(`[Hume][SEND][ERROR] ${info}: ${String(e)}`);
       try {
         conn.ws.close();
       } catch {}
@@ -126,29 +110,16 @@ export class HumeStreamService implements OnModuleDestroy {
       ): WsClient;
     };
     const ws: WsClient = new WSClientCtor(this.wsUrl, undefined, { headers: this.wsHeaders });
-    const headerKeys = Object.keys(this.wsHeaders || {});
-    const authPresent =
-      typeof this.wsHeaders?.['X-Hume-Api-Key'] === 'string' &&
-      this.wsHeaders['X-Hume-Api-Key'].length > 0;
-    this.logger.log(`[Hume] connecting WS for ${key} → ${this.wsUrl}`);
-    this.logger.log(
-      `[Hume] headers: keys=[${headerKeys.join(', ')}] auth=${authPresent ? 'present' : 'absent'}`,
-    );
     const conn: Connection = { ws, isOpen: false, pending: [], configured: false };
     this.keyToConn.set(key, conn);
 
     ws.on('open', () => {
-      this.logger.log(`[Hume] WS open for ${key}`);
       conn.isOpen = true;
       // Flush any pending payloads (each payload includes models)
       for (const msg of conn.pending.splice(0)) {
         try {
           ws.send(msg);
-          const info = this.describePayload(msg);
-          this.logger.log(`[Hume][SENT] ${info} dispatched (flush)`);
         } catch (e) {
-          const info = this.describePayload(msg);
-          this.logger.error(`[Hume][SEND][ERROR] ${info} during flush: ${String(e)}`);
           break;
         }
       }
@@ -195,7 +166,6 @@ export class HumeStreamService implements OnModuleDestroy {
               if (typeof m === 'string') errorMsg = m;
             }
           }
-          // DIAGNOSTIC: Log ALL responses to see what Hume is returning
           const prosody = anyObj['prosody'];
           const hasProsody = prosody && typeof prosody === 'object';
           
@@ -204,23 +174,6 @@ export class HumeStreamService implements OnModuleDestroy {
           const prosodyExtraction = hasProsody ? this.extractEmotionsAndMetrics(prosody) : null;
           const extraction = prosodyExtraction ?? fullExtraction;
           const { valence, arousal, emotions } = extraction;
-          
-          // DIAGNOSTIC: Always log what we found
-          if (emotions && Object.keys(emotions).length > 0) {
-            const top5 = Object.entries(emotions)
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, 5)
-              .map(([name, score]) => `${name}:${score.toFixed(3)}`)
-              .join(', ');
-            this.logger.log(`[Hume][EMOTIONS] ✅ Found ${Object.keys(emotions).length} emotions. Top 5: ${top5}, source=${hasProsody ? 'prosody' : 'full'}`);
-          } else {
-            // Log structure to diagnose why no emotions
-            const prosodyKeys = hasProsody ? Object.keys(prosody as Record<string, unknown>) : [];
-            const allKeys = Object.keys(anyObj);
-            this.logger.warn(
-              `[Hume][EMOTIONS] ❌ No emotions found. prosody=${hasProsody}, prosodyKeys=[${prosodyKeys.join(', ')}], allKeys=[${allKeys.join(', ')}], V=${valence?.toFixed(2) ?? 'N/A'}, A=${arousal?.toFixed(2) ?? 'N/A'}`,
-            );
-          }
           
           if (prosody && typeof prosody === 'object') {
             const warnings: string[] = [];
@@ -291,30 +244,19 @@ export class HumeStreamService implements OnModuleDestroy {
                 rawHash: this.sha256(text),
               },
             };
-            this.logger.log(`[Hume][EMOTIONS] Emitting event without prosody object (emotions found elsewhere)`);
             this.emitter.emit('feedback.ingestion', evt);
           }
         }
-        if (errorMsg) {
-          this.logger.error(
-            `[Hume][RECV][ERROR] type=${type ?? 'unknown'} status=${String(status ?? '')} msg="${errorMsg}" raw="${preview}"`,
-          );
-        } else {
-          const keys = isObj ? Object.keys(obj as Record<string, unknown>) : [];
-          this.logger.log(
-            `[Hume][RECV][OK] type=${type ?? 'unknown'} status=${String(status ?? '')} keys=[${keys.slice(0, 10).join(', ')}] raw="${preview}"`,
-          );
-        }
       } catch {
-        this.logger.log(`[Hume][RECV][TEXT] ${preview}`);
+        // Silent error handling
       }
     });
     ws.on('error', (err: Error) => {
-      this.logger.error(`[Hume][WS][ERROR] for ${key}: ${err.name}: ${err.message}`);
+      void err;
     });
     ws.on('close', (code: number, reason: Buffer) => {
-      const reasonText = Buffer.isBuffer(reason) ? reason.toString('utf8') : String(reason ?? '');
-      this.logger.warn(`[Hume][WS][CLOSE] for ${key}: code=${code} reason="${reasonText}"`);
+      void code;
+      void reason;
       this.keyToConn.delete(key);
     });
     return conn;
@@ -467,7 +409,6 @@ export class HumeStreamService implements OnModuleDestroy {
         conn.ws.close();
       } catch {}
       this.keyToConn.delete(key);
-      this.logger.log(`[Hume] closed WS for ${key}`);
     }
   }
 }
