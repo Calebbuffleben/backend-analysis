@@ -2,6 +2,7 @@ import { FeedbackEventPayload } from '../../feedback.types';
 import { ParticipantState, DetectionContext } from '../types';
 import * as TextAnalysis from '../text-analysis';
 
+
 /**
  * Executa a pipeline de análise de texto (Text Analysis) para feedbacks de vendas.
  * 
