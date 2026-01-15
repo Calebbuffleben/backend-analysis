@@ -28,13 +28,25 @@ export class DetectClientIndecision {
 
     this.logger.log(`🔴 [INDECISION] Detector called for ${meetingId}/${participantId}`);
 
-    // Só faz sentido detectar "indecisão do cliente" para o lado cliente (guest).
-    // Se o backend conseguir identificar o host, evitamos falso positivo no vendedor.
+    // Verificação de role: Só bloqueia se tiver CERTEZA ABSOLUTA de que é host.
+    // Se a função não existir ou retornar qualquer coisa diferente de 'host',
+    // permite continuar (assume que pode ser cliente). Isso evita bloquear quando
+    // o role ainda não foi identificado corretamente ou quando há incerteza.
+    // 
+    // IMPORTANTE: getParticipantRole retorna 'unknown' quando participante não encontrado.
+    // Isso NÃO deve bloquear a detecção, pois pode ser um cliente ainda não identificado.
     const role = ctx.getParticipantRole?.(meetingId, participantId);
-    if (role === 'host') {
-      this.logger.debug('❌ [INDECISION] Skipping host participant');
+    
+    // Só bloqueia se for EXATAMENTE 'host' E a função estiver disponível.
+    // Qualquer outro valor ('guest', 'unknown', undefined, null) ou função ausente,
+    // permite continuar a detecção.
+    if (ctx.getParticipantRole && role === 'host') {
+      this.logger.debug('❌ [INDECISION] Skipping host participant (confirmed host role)');
       return null;
     }
+    
+    // Para qualquer outro caso ('guest', 'unknown', undefined, null, ou função ausente),
+    // continua a detecção assumindo que pode ser um cliente
 
     // Preencher nome do participante no mapa local (usado na montagem do payload).
     const participantName = ctx.getParticipantName(meetingId, participantId);
@@ -84,6 +96,14 @@ export class DetectClientIndecision {
     const textAnalysis = state.textAnalysis;
     if (!textAnalysis) {
       this.logger.debug('❌ [INDECISION] No text analysis data');
+      return null;
+    }
+    
+    // Garantir que textHistory existe e não está vazio
+    // Se o histórico não foi inicializado corretamente, não há dados para analisar
+    const textHistory = textAnalysis.textHistory ?? [];
+    if (textHistory.length === 0) {
+      this.logger.debug('❌ [INDECISION] No text history available');
       return null;
     }
 
