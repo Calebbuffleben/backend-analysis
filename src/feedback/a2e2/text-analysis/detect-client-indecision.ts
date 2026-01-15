@@ -126,7 +126,7 @@ export class DetectClientIndecision {
 
     // Confidence passa a ser a média dos sinais válidos
     // Nota: detectActiveIndecision() já garante que se isActive: true,
-    // então averageConfidence >= 0.25, então não precisamos verificar novamente
+    // então averageConfidence >= minAverageConfidence (0.15), então não precisamos verificar novamente
     const confidence = activeIndecision.averageConfidence;
 
     this.logger.debug('📊 [INDECISION] Active indecision confidence', {
@@ -524,7 +524,9 @@ export class DetectClientIndecision {
     const indecisionCategories = ['stalling', 'objection_soft'];
     const minConfidence = 0.15; // Threshold mais permissivo
     const minSignals = 1; // Mínimo de sinais válidos
-    const minAverageConfidence = 0.25; // Confiança média mínima
+    // Para 1 sinal: usar a confiança do próprio sinal (minConfidence já garante >= 0.15)
+    // Para múltiplos sinais: usar média mínima de 0.20 (mais permissivo que 0.25)
+    const minAverageConfidence = 0.15; // Confiança média mínima (igual ao minConfidence para permitir 1 sinal válido)
 
     // ========================================================================
     // Obter últimos N chunks (mais recentes primeiro)
