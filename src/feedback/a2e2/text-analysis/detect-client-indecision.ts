@@ -466,12 +466,19 @@ export class DetectClientIndecision {
   }
 
   /**
-   * Verifica se chunk é não semântico (ruído, mensagens de sistema, tempo restante).
+   * Verifica se chunk é não semântico (mensagens de sistema, ruído claro).
+   * 
+   * NOTA: Este filtro é aplicado APENAS quando NÃO há classificação ML disponível.
+   * Se o SBERT classificou o texto, a classificação ML tem prioridade (semântica > sintaxe).
    * 
    * Padrões detectados:
-   * - "X segundos restantes" / "X minutos restantes"
-   * - Mensagens de sistema curtas e sem contexto
-   * - Textos muito curtos sem palavras significativas
+   * - "X segundos restantes" / "X minutos restantes" (mensagens de sistema explícitas)
+   * - Textos muito curtos sem palavras significativas (ruído de transcrição)
+   * 
+   * REMOVIDO: Filtro de repetição (>50%) porque:
+   * - Repetição pode ser legítima (hesitação, pensamento em voz alta)
+   * - SBERT já analisa semanticamente e filtra por confiança
+   * - Redundância desnecessária entre heurísticas e ML
    * 
    * @param text Texto do chunk
    * @returns true se chunk for não semântico
@@ -479,31 +486,26 @@ export class DetectClientIndecision {
   private isNonSemanticChunk(text: string): boolean {
     const textLower = text.toLowerCase().trim();
     
-    // Padrão: "X segundos/minutos restantes"
+    // Padrão: "X segundos/minutos restantes" (mensagens de sistema explícitas)
     const timeRemainingPattern = /\d+\s*(segundos?|minutos?)\s*restantes?/i;
     if (timeRemainingPattern.test(textLower)) {
       return true;
     }
     
-    // Detectar repetições excessivas (ex: "O que é o que é o que é...")
-    const words = textLower.split(/\s+/).filter(w => w.length > 0);
-    if (words.length > 2) {
-      const uniqueWords = new Set(words);
-      const repetitionRatio = 1 - (uniqueWords.size / words.length);
-      // Mais de 50% de repetição indica texto repetitivo/não semântico
-      if (repetitionRatio > 0.5) {
-        return true;
-      }
-    }
-    
-    // Textos muito curtos (< 10 caracteres) sem palavras significativas
+    // Textos muito curtos (< 10 caracteres) sem palavras significativas (ruído de transcrição)
     if (textLower.length < 10) {
+      const words = textLower.split(/\s+/).filter(w => w.length > 0);
       // Lista de palavras muito comuns que não agregam significado
       const noiseWords = ['ok', 'ah', 'hmm', 'uh', 'é', 'sim', 'não', 'tá', 'entendi'];
       if (words.length <= 1 && noiseWords.some(noise => textLower.includes(noise))) {
         return true;
       }
     }
+    
+    // REMOVIDO: Filtro de repetição excessiva
+    // - Repetição pode ser sinal legítimo de indecisão (hesitação)
+    // - SBERT já classifica semanticamente e filtra por confiança
+    // - Evita bloquear sinais válidos classificados pelo ML
     
     return false;
   }
@@ -574,35 +576,46 @@ export class DetectClientIndecision {
     });
 
     for (const entry of recentChunks) {
-      // Ignorar chunks não semânticos
-      if (this.isNonSemanticChunk(entry.text)) {
-        this.logger.debug('🔍 [ACTIVE_INDECISION] Skipping non-semantic chunk', {
-          text: entry.text.substring(0, 50),
+      // ========================================================================
+      // Prioridade 1: Verificar classificação ML (SBERT) primeiro
+      // ========================================================================
+      // Se o modelo ML classificou como indecisão com confiança suficiente,
+      // isso é a fonte mais confiável (ignora filtros heurísticos de texto)
+      const category = entry.sales_category;
+      const confidence = entry.sales_category_confidence;
+      
+      // Verificar se tem classificação ML válida
+      const hasValidMLClassification = 
+        category && 
+        category !== null && 
+        indecisionCategories.includes(category) &&
+        confidence !== null && 
+        confidence !== undefined && 
+        confidence >= minConfidence;
+      
+      if (hasValidMLClassification) {
+        // Chunk válido baseado em classificação ML!
+        // Nota: Mesmo se o texto tiver repetições ou outros padrões,
+        // a classificação ML é a fonte de verdade (semântica > sintaxe)
+        validSignals.push({
+          text: entry.text,
+          category,
+          confidence,
         });
         continue;
       }
-
-      // Verificar se tem categoria válida
-      // IMPORTANTE: sales_category pode ser null/undefined se não foi classificada pelo Python
-      const category = entry.sales_category;
-      if (!category || category === null || !indecisionCategories.includes(category)) {
+      
+      // ========================================================================
+      // Prioridade 2: Aplicar filtros heurísticos apenas se NÃO há classificação ML
+      // ========================================================================
+      // Filtros heurísticos servem como fallback para casos onde não há
+      // classificação ML disponível (mensagens de sistema, ruído de transcrição)
+      if (this.isNonSemanticChunk(entry.text)) {
         continue;
       }
-
-      // Verificar confiança mínima
-      // IMPORTANTE: sales_category_confidence pode ser null/undefined
-      const confidence = entry.sales_category_confidence;
-      if (confidence === null || confidence === undefined || confidence < minConfidence) {
-        continue;
-      }
-
-      // Chunk válido!
-      // Nota: category e confidence já foram validados acima, então são não-null aqui
-      validSignals.push({
-        text: entry.text,
-        category,
-        confidence,
-      });
+      
+      // Se chegou aqui, não tem classificação ML válida E passou filtros heurísticos
+      // (Não adiciona aos validSignals porque precisa de classificação ML para detectar indecisão)
     }
 
     // ========================================================================
@@ -936,25 +949,37 @@ export class DetectClientIndecision {
     // Obter últimos N chunks (mais recentes primeiro)
     const recentChunks = textHistory.slice(-maxChunks);
 
-    // Filtrar textos de indecisão (ignorar chunks não semânticos)
+    // Filtrar textos de indecisão
+    // Prioridade: Classificação ML > Filtros heurísticos
     const indecisionTexts = recentChunks
       .filter(entry => {
-        // Ignorar chunks não semânticos
+        // Prioridade 1: Verificar classificação ML primeiro
+        const category = entry.sales_category;
+        const confidence = entry.sales_category_confidence;
+        
+        const hasValidMLClassification = 
+          category && 
+          category !== null && 
+          indecisionCategories.includes(category) &&
+          confidence !== null && 
+          confidence !== undefined && 
+          confidence >= minConfidence;
+        
+        if (hasValidMLClassification) {
+          // Classificação ML válida - aceita mesmo se tiver padrões de texto
+          return true;
+        }
+        
+        // Prioridade 2: Aplicar filtros heurísticos apenas se NÃO há classificação ML
+        // Se não tem classificação ML, não pode extrair frase representativa
+        // (filtro heurístico apenas para evitar processamento desnecessário)
         if (this.isNonSemanticChunk(entry.text)) {
           return false;
         }
-
-        // Verificar categoria (deve ser stalling ou objection_soft)
-        if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
-          return false;
-        }
-
-        // Verificar confiança mínima
-        if ((entry.sales_category_confidence ?? 0) < minConfidence) {
-          return false;
-        }
-
-        return true;
+        
+        // Se chegou aqui, não tem classificação ML válida E passou filtros heurísticos
+        // Mas sem classificação ML, não temos frase representativa de indecisão
+        return false;
       })
       // Ordenar por confiança (maior primeiro)
       .sort((a, b) => (b.sales_category_confidence ?? 0) - (a.sales_category_confidence ?? 0))
