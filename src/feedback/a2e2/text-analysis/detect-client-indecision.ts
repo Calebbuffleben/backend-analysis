@@ -583,36 +583,24 @@ export class DetectClientIndecision {
       }
 
       // Verificar se tem categoria válida
-      if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
-        this.logger.debug('🔍 [ACTIVE_INDECISION] Skipping chunk - invalid category', {
-          category: entry.sales_category,
-          validCategories: indecisionCategories,
-          text: entry.text.substring(0, 50),
-        });
+      // IMPORTANTE: sales_category pode ser null/undefined se não foi classificada pelo Python
+      const category = entry.sales_category;
+      if (!category || category === null || !indecisionCategories.includes(category)) {
         continue;
       }
 
       // Verificar confiança mínima
-      const confidence = entry.sales_category_confidence ?? 0;
-      if (confidence < minConfidence) {
-        this.logger.debug('🔍 [ACTIVE_INDECISION] Skipping chunk - low confidence', {
-          confidence,
-          minConfidence,
-          category: entry.sales_category,
-          text: entry.text.substring(0, 50),
-        });
+      // IMPORTANTE: sales_category_confidence pode ser null/undefined
+      const confidence = entry.sales_category_confidence;
+      if (confidence === null || confidence === undefined || confidence < minConfidence) {
         continue;
       }
 
       // Chunk válido!
-      this.logger.debug('✅ [ACTIVE_INDECISION] Valid signal found', {
-        category: entry.sales_category,
-        confidence,
-        text: entry.text.substring(0, 50),
-      });
+      // Nota: category e confidence já foram validados acima, então são não-null aqui
       validSignals.push({
         text: entry.text,
-        category: entry.sales_category,
+        category,
         confidence,
       });
     }
