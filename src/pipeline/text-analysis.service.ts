@@ -260,21 +260,12 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`[CONNECTION] Reconnection enabled: true, max attempts: ${this.maxReconnectAttempts === Number.POSITIVE_INFINITY ? '∞' : this.maxReconnectAttempts}`);
 
     try {
-      // Configurações otimizadas para Railway/produção
-      // Usar polling primeiro para garantir handshake HTTP inicial, depois upgrade para WebSocket
+      // Configuração original que funcionava: apenas WebSocket
       this.socket = io(this.pythonServiceUrl, {
-        transports: ['polling', 'websocket'], // Polling primeiro (necessário para handshake HTTP inicial)
+        transports: ['websocket'], // Apenas WebSocket (como estava funcionando antes)
         reconnection: true,
-        reconnectionDelay: 2000, // Aumentar delay entre tentativas
+        reconnectionDelay: 1000, // Delay original
         reconnectionAttempts: this.maxReconnectAttempts,
-        timeout: 20000, // Timeout maior para Railway
-        forceNew: true, // Forçar nova conexão a cada tentativa
-        path: '/socket.io/', // Path explícito
-        // Configurações adicionais para Railway
-        upgrade: true, // Permitir upgrade de polling para WebSocket após handshake
-        rememberUpgrade: false, // Não lembrar upgrade em caso de falha
-        // Headers adicionais se necessário
-        extraHeaders: {},
       });
     } catch (error) {
       this.logger.error(
