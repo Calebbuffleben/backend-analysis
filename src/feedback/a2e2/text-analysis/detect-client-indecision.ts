@@ -106,6 +106,31 @@ export class DetectClientIndecision {
       this.logger.debug('❌ [INDECISION] No text history available');
       return null;
     }
+    
+    // FASE 2: Validação de integridade do textHistory
+    // Verificar se o histórico contém pelo menos uma entrada válida
+    const historyWithCategory = textHistory.filter(entry => entry.sales_category).length;
+    if (historyWithCategory === 0 && textHistory.length > 0) {
+      this.logger.debug('⚠️ [INDECISION] Text history exists but has no entries with sales_category', {
+        totalEntries: textHistory.length,
+        entriesWithCategory: historyWithCategory,
+        lastEntryText: textHistory[textHistory.length - 1]?.text?.substring(0, 50) ?? 'null',
+        lastEntryCategory: textHistory[textHistory.length - 1]?.sales_category ?? null,
+      });
+    }
+    
+    // FASE 2: Validação de sincronização - verificar se o histórico não está muito desatualizado
+    // Se o último chunk no histórico é muito antigo (> 5 segundos), pode indicar problema
+    const lastEntryTimestamp = textHistory[textHistory.length - 1]?.timestamp;
+    if (lastEntryTimestamp && now - lastEntryTimestamp > 5000) {
+      this.logger.debug('⚠️ [INDECISION] Text history may be stale', {
+        lastEntryTimestamp,
+        now,
+        ageMs: now - lastEntryTimestamp,
+        ageSec: Math.round((now - lastEntryTimestamp) / 1000),
+        historyLength: textHistory.length,
+      });
+    }
 
     // ========================================================================
     // Verificar cooldown (2 minutos)
@@ -137,21 +162,60 @@ export class DetectClientIndecision {
     const activeIndecision = this.detectActiveIndecision(state, 5);
 
     if (!activeIndecision || !activeIndecision.isActive) {
+      // FASE 4: Log detalhado quando indecisão ativa não é detectada
+      const textAnalysis = state.textAnalysis;
       this.logger.debug('❌ [INDECISION] No active indecision detected', {
         signalsCount: activeIndecision?.signalsCount ?? 0,
-        averageConfidence: activeIndecision?.averageConfidence ?? 0,
+        averageConfidence: activeIndecision?.averageConfidence?.toFixed(3) ?? '0.000',
+        validSignals: activeIndecision?.validSignals?.map(s => ({
+          category: s.category,
+          confidence: s.confidence.toFixed(3),
+          text_preview: s.text.substring(0, 50),
+        })) ?? [],
+        reason: !activeIndecision ? 'detectActiveIndecision returned null' :
+                activeIndecision.signalsCount < 1 ? `Only ${activeIndecision.signalsCount} valid signals (need >= 1)` :
+                activeIndecision.averageConfidence < 0.15 ? `Average confidence ${activeIndecision.averageConfidence.toFixed(3)} too low` :
+                'unknown',
+        textHistoryLength: textAnalysis?.textHistory?.length ?? 0,
+        currentSalesCategory: textAnalysis?.sales_category ?? null,
+        currentSalesCategoryConfidence: textAnalysis?.sales_category_confidence?.toFixed(3) ?? null,
       });
       return null;
     }
 
     // Confidence passa a ser a média dos sinais válidos
     // Nota: detectActiveIndecision() já garante que se isActive: true,
-    // então averageConfidence >= minAverageConfidence (0.15), então não precisamos verificar novamente
+    // então averageConfidence >= minAverageConfidence (dinâmico), então não precisamos verificar novamente
     const confidence = activeIndecision.averageConfidence;
 
-    this.logger.debug('📊 [INDECISION] Active indecision confidence', {
-      confidence,
+    // FASE 4: Log detalhado de confidence final e métricas relacionadas
+    // Nota: textAnalysis já foi declarado anteriormente no escopo da função
+    const indecisionMetrics = textAnalysis?.indecision_metrics;
+    const salesCategoryFlags = textAnalysis?.sales_category_flags;
+    
+    this.logger.debug('📊 [INDECISION] Active indecision confidence and metrics', {
+      confidence: confidence.toFixed(3),
       signalsCount: activeIndecision.signalsCount,
+      validSignalsDetails: activeIndecision.validSignals.map(s => ({
+        category: s.category,
+        confidence: s.confidence.toFixed(3),
+        text_preview: s.text.substring(0, 50),
+      })),
+      indecision_metrics: indecisionMetrics ? {
+        indecision_score: indecisionMetrics.indecision_score?.toFixed(3) ?? null,
+        postponement_likelihood: indecisionMetrics.postponement_likelihood?.toFixed(3) ?? null,
+        conditional_language_score: indecisionMetrics.conditional_language_score?.toFixed(3) ?? null,
+      } : null,
+      sales_category_flags: salesCategoryFlags ? {
+        price_window_open: salesCategoryFlags.price_window_open ?? false,
+        decision_signal_strong: salesCategoryFlags.decision_signal_strong ?? false,
+        ready_to_close: salesCategoryFlags.ready_to_close ?? false,
+        indecision_detected: salesCategoryFlags.indecision_detected ?? false,
+        decision_postponement_signal: salesCategoryFlags.decision_postponement_signal ?? false,
+        conditional_language_signal: salesCategoryFlags.conditional_language_signal ?? false,
+      } : null,
+      current_sales_category: textAnalysis?.sales_category ?? null,
+      current_sales_category_confidence: textAnalysis?.sales_category_confidence?.toFixed(3) ?? null,
     });
 
     // ========================================================================
@@ -544,25 +608,30 @@ export class DetectClientIndecision {
     }
 
     const indecisionCategories = ['stalling', 'objection_soft'];
-    const minConfidence = 0.15; // Threshold mais permissivo
+    // FASE 3: Threshold inicial para coleta de sinais (base line, mais permissivo)
+    // Os thresholds dinâmicos serão aplicados APÓS coletar os sinais válidos
+    const baseMinConfidence = 0.15; // Threshold base para coleta inicial (mais permissivo)
     const minSignals = 1; // Mínimo de sinais válidos
-    // Para 1 sinal: usar a confiança do próprio sinal (minConfidence já garante >= 0.15)
-    // Para múltiplos sinais: usar média mínima de 0.20 (mais permissivo que 0.25)
-    const minAverageConfidence = 0.15; // Confiança média mínima (igual ao minConfidence para permitir 1 sinal válido)
 
     // ========================================================================
     // Obter últimos N chunks (mais recentes primeiro)
     // ========================================================================
     const recentChunks = textHistory.slice(-maxChunks);
 
+    // FASE 1: Log detalhado do conteúdo do textHistory
     this.logger.debug('🔍 [ACTIVE_INDECISION] Starting analysis', {
       totalHistoryLength: textHistory.length,
       recentChunksCount: recentChunks.length,
       maxChunks,
       minSignals,
-      minConfidence,
-      minAverageConfidence,
+      baseMinConfidence,
       indecisionCategories,
+      recentChunksPreview: recentChunks.map(entry => ({
+        text_preview: entry.text.substring(0, 50),
+        sales_category: entry.sales_category,
+        sales_category_confidence: entry.sales_category_confidence,
+        timestamp: entry.timestamp,
+      })),
     });
 
     // ========================================================================
@@ -575,7 +644,10 @@ export class DetectClientIndecision {
       maxChunks,
     });
 
+    let chunkIndex = 0;
     for (const entry of recentChunks) {
+      chunkIndex++;
+      
       // ========================================================================
       // Prioridade 1: Verificar classificação ML (SBERT) primeiro
       // ========================================================================
@@ -584,19 +656,58 @@ export class DetectClientIndecision {
       const category = entry.sales_category;
       const confidence = entry.sales_category_confidence;
       
+      // FASE 1: Log detalhado de cada chunk analisado
+      this.logger.debug(`🔍 [ACTIVE_INDECISION] Chunk ${chunkIndex}/${recentChunks.length}`, {
+        text_preview: entry.text.substring(0, 80),
+        sales_category: category,
+        sales_category_confidence: confidence,
+        category_type: typeof category,
+        confidence_type: typeof confidence,
+        category_is_null: category === null,
+        category_is_undefined: category === undefined,
+        confidence_is_null: confidence === null,
+        confidence_is_undefined: confidence === undefined,
+      });
+      
       // Verificar se tem classificação ML válida
-      const hasValidMLClassification = 
-        category && 
-        category !== null && 
-        indecisionCategories.includes(category) &&
-        confidence !== null && 
-        confidence !== undefined && 
-        confidence >= minConfidence;
+      // FASE 3: Usar threshold base para coleta inicial (thresholds dinâmicos aplicados depois)
+      const hasCategory = category && category !== null;
+      const hasIndecisionCategory = hasCategory && indecisionCategories.includes(category);
+      const hasValidConfidence = confidence !== null && confidence !== undefined;
+      const hasMinConfidence = hasValidConfidence && confidence >= baseMinConfidence;
+      
+      const hasValidMLClassification = hasCategory && hasIndecisionCategory && hasValidConfidence && hasMinConfidence;
+      
+      // FASE 1: Log detalhado da validação ML
+      if (!hasValidMLClassification) {
+        this.logger.debug(`❌ [ACTIVE_INDECISION] Chunk ${chunkIndex} - ML classification invalid`, {
+          hasCategory,
+          hasIndecisionCategory,
+          hasValidConfidence,
+          hasMinConfidence,
+          category,
+          confidence,
+          baseMinConfidence,
+          reason: !hasCategory ? 'no_category' :
+                  !hasIndecisionCategory ? 'not_indecision_category' :
+                  !hasValidConfidence ? 'no_confidence' :
+                  !hasMinConfidence ? `confidence_below_threshold (${confidence} < ${baseMinConfidence})` : 'unknown',
+        });
+      }
       
       if (hasValidMLClassification) {
         // Chunk válido baseado em classificação ML!
         // Nota: Mesmo se o texto tiver repetições ou outros padrões,
         // a classificação ML é a fonte de verdade (semântica > sintaxe)
+        
+        // FASE 1: Log quando chunk ML válido é encontrado
+        this.logger.debug(`✅ [ACTIVE_INDECISION] Chunk ${chunkIndex} - Valid ML classification found!`, {
+          text_preview: entry.text.substring(0, 80),
+          category,
+          confidence,
+          will_add_to_valid_signals: true,
+        });
+        
         validSignals.push({
           text: entry.text,
           category,
@@ -610,12 +721,28 @@ export class DetectClientIndecision {
       // ========================================================================
       // Filtros heurísticos servem como fallback para casos onde não há
       // classificação ML disponível (mensagens de sistema, ruído de transcrição)
-      if (this.isNonSemanticChunk(entry.text)) {
+      const isNonSemantic = this.isNonSemanticChunk(entry.text);
+      
+      // FASE 1: Log quando chunk é filtrado heurístico
+      if (isNonSemantic) {
+        this.logger.debug(`🔍 [ACTIVE_INDECISION] Chunk ${chunkIndex} - Filtered by heuristic (non-semantic)`, {
+          text_preview: entry.text.substring(0, 80),
+          reason: 'isNonSemanticChunk returned true',
+        });
+      }
+      
+      if (isNonSemantic) {
         continue;
       }
       
       // Se chegou aqui, não tem classificação ML válida E passou filtros heurísticos
       // (Não adiciona aos validSignals porque precisa de classificação ML para detectar indecisão)
+      
+      // FASE 1: Log quando chunk não tem ML e não é filtrado (caso raro)
+      this.logger.debug(`🔍 [ACTIVE_INDECISION] Chunk ${chunkIndex} - No ML classification and passed heuristics`, {
+        text_preview: entry.text.substring(0, 80),
+        note: 'Not added to validSignals (requires ML classification)',
+      });
     }
 
     // ========================================================================
@@ -623,11 +750,50 @@ export class DetectClientIndecision {
     // ========================================================================
     const signalsCount = validSignals.length;
     
+    // FASE 3: Calcular thresholds dinâmicos baseados na quantidade de sinais
+    // Lógica adaptativa:
+    // - 1 sinal: threshold mais alto (0.20) - mais conservador para evitar falsos positivos
+    // - 2+ sinais: threshold médio (0.15) - balanceado
+    // - 3+ sinais: threshold mais baixo (0.12) - mais permissivo, múltiplos sinais aumentam confiança
+    let dynamicMinConfidence: number;
+    let dynamicMinAverageConfidence: number;
+    
+    if (signalsCount === 1) {
+      // FASE 3: Com apenas 1 sinal, ser mais conservador (threshold mais alto)
+      dynamicMinConfidence = 0.20;
+      dynamicMinAverageConfidence = 0.20;
+    } else if (signalsCount >= 2 && signalsCount < 3) {
+      // FASE 3: Com 2 sinais, usar threshold padrão
+      dynamicMinConfidence = 0.15;
+      dynamicMinAverageConfidence = 0.15;
+    } else {
+      // FASE 3: Com 3+ sinais, ser mais permissivo (threshold mais baixo)
+      // Múltiplos sinais indicam padrão consistente, permitindo menor confidence individual
+      dynamicMinConfidence = 0.12;
+      dynamicMinAverageConfidence = 0.12;
+    }
+    
+    // FASE 1: Log resumo da análise
+    this.logger.debug('📊 [ACTIVE_INDECISION] Analysis summary', {
+      totalChunksAnalyzed: recentChunks.length,
+      validSignalsCount: signalsCount,
+      minSignalsRequired: minSignals,
+      baseMinConfidence,
+      dynamicMinConfidence,
+      dynamicMinAverageConfidence,
+      validSignalsDetails: validSignals.map(s => ({
+        category: s.category,
+        confidence: s.confidence,
+        text_preview: s.text.substring(0, 50),
+      })),
+    });
+    
     if (signalsCount < minSignals) {
-      this.logger.debug('🔍 [ACTIVE_INDECISION] Not enough valid signals', {
+      this.logger.debug('❌ [ACTIVE_INDECISION] Not enough valid signals', {
         signalsCount,
         minSignals,
         validSignals: validSignals.map(s => ({ category: s.category, confidence: s.confidence })),
+        reason: `Found ${signalsCount} valid signals but need at least ${minSignals}`,
       });
       return {
         isActive: false,
@@ -637,35 +803,63 @@ export class DetectClientIndecision {
       };
     }
 
-    // Calcular confiança média
-    const averageConfidence = validSignals.reduce((sum, s) => sum + s.confidence, 0) / signalsCount;
-
-    if (averageConfidence < minAverageConfidence) {
-      this.logger.debug('🔍 [ACTIVE_INDECISION] Average confidence too low', {
-        averageConfidence,
-        minAverageConfidence,
-        signalsCount,
+    // FASE 3: Aplicar threshold dinâmico para confidence individual
+    // Se algum sinal não atende o threshold dinâmico, removê-lo
+    const filteredSignals = validSignals.filter(s => s.confidence >= dynamicMinConfidence);
+    const filteredSignalsCount = filteredSignals.length;
+    
+    if (filteredSignalsCount < minSignals) {
+      this.logger.debug('❌ [ACTIVE_INDECISION] Not enough signals after dynamic threshold filtering', {
+        originalSignalsCount: signalsCount,
+        filteredSignalsCount,
+        dynamicMinConfidence,
+        minSignals,
+        validSignals: validSignals.map(s => ({ category: s.category, confidence: s.confidence })),
+        filteredSignals: filteredSignals.map(s => ({ category: s.category, confidence: s.confidence })),
+        reason: `After applying dynamic threshold ${dynamicMinConfidence}, only ${filteredSignalsCount} signals remain (need at least ${minSignals})`,
       });
       return {
         isActive: false,
-        validSignals,
+        validSignals: filteredSignals,
+        averageConfidence: 0,
+        signalsCount: filteredSignalsCount,
+      };
+    }
+
+    // Calcular confiança média dos sinais filtrados
+    const averageConfidence = filteredSignals.reduce((sum, s) => sum + s.confidence, 0) / filteredSignalsCount;
+
+    // FASE 3: Aplicar threshold dinâmico para confidence média
+    if (averageConfidence < dynamicMinAverageConfidence) {
+      this.logger.debug('❌ [ACTIVE_INDECISION] Average confidence too low (dynamic threshold)', {
         averageConfidence,
-        signalsCount,
+        dynamicMinAverageConfidence,
+        signalsCount: filteredSignalsCount,
+        confidenceValues: filteredSignals.map(s => s.confidence),
+        reason: `Average confidence ${averageConfidence.toFixed(3)} is below dynamic threshold ${dynamicMinAverageConfidence} (${filteredSignalsCount} signals)`,
+      });
+      return {
+        isActive: false,
+        validSignals: filteredSignals,
+        averageConfidence,
+        signalsCount: filteredSignalsCount,
       };
     }
 
     // Indecisão ativa detectada!
     this.logger.debug('✅ [ACTIVE_INDECISION] Active indecision detected', {
-      signalsCount,
+      signalsCount: filteredSignalsCount,
       averageConfidence,
-      validSignals: validSignals.map(s => ({ category: s.category, confidence: s.confidence })),
+      dynamicMinConfidence,
+      dynamicMinAverageConfidence,
+      validSignals: filteredSignals.map(s => ({ category: s.category, confidence: s.confidence, text_preview: s.text.substring(0, 50) })),
     });
 
     return {
       isActive: true,
-      validSignals,
+      validSignals: filteredSignals,
       averageConfidence,
-      signalsCount,
+      signalsCount: filteredSignalsCount,
     };
   }
 
@@ -719,15 +913,32 @@ export class DetectClientIndecision {
     const indecisionRatio = indecisionTexts.length / windowTexts.length;
     const hasTemporalConsistency = indecisionRatio >= 0.5;
 
+    // FASE 4: Log detalhado de proporção de chunks de indecisão na janela
     this.logger.debug('⏱️ [TEMPORAL] Consistency calculation', {
       windowTextsCount: windowTexts.length,
       indecisionTextsCount: indecisionTexts.length,
-      indecisionRatio,
+      indecisionRatio: indecisionRatio.toFixed(3),
       threshold: 0.5,
-      hasTemporalConsistency
+      hasTemporalConsistency,
+      windowMs,
+      cutoffTime,
+      now,
     });
 
     if (!hasTemporalConsistency) {
+      // FASE 4: Log quando proporção de indecisão é insuficiente
+      this.logger.debug('❌ [TEMPORAL] Insufficient indecision ratio in window', {
+        indecisionRatio: indecisionRatio.toFixed(3),
+        threshold: 0.5,
+        windowTextsCount: windowTexts.length,
+        indecisionTextsCount: indecisionTexts.length,
+        reason: `Only ${(indecisionRatio * 100).toFixed(1)}% of chunks are indecision (need >= 50%)`,
+        windowTextsPreview: windowTexts.slice(-5).map(entry => ({
+          text_preview: entry.text.substring(0, 50),
+          sales_category: entry.sales_category,
+          sales_category_confidence: entry.sales_category_confidence,
+        })),
+      });
       return false;
     }
 
@@ -738,7 +949,16 @@ export class DetectClientIndecision {
     // consistente com um padrão de indecisão mantido ao longo do tempo
     const aggregated = textAnalysis.sales_category_aggregated;
     const stability = aggregated?.stability ?? 0;
+    
+    // FASE 4: Log quando estabilidade é insuficiente
     if (stability < 0.5) {
+      this.logger.debug('❌ [TEMPORAL] Stability too low', {
+        stability: stability.toFixed(3),
+        threshold: 0.5,
+        dominant_category: aggregated?.dominant_category ?? null,
+        category_distribution: aggregated?.category_distribution ?? null,
+        reason: `Stability ${stability.toFixed(3)} is below threshold 0.5 (indicates category alternation)`,
+      });
       return false;
     }
 
@@ -752,11 +972,29 @@ export class DetectClientIndecision {
 
     const finalTemporalConsistency = hasTemporalConsistency && stability >= 0.5 && isStable;
 
+    // FASE 4: Log detalhado de tendência quando não é estável
+    if (!isStable) {
+      this.logger.debug('❌ [TEMPORAL] Trend is not stable', {
+        trend: trend?.trend ?? 'unknown',
+        isStable,
+        trend_strength: trend?.trend_strength ?? null,
+        current_stage: trend?.current_stage ?? null,
+        velocity: trend?.velocity ?? null,
+        reason: `Trend '${trend?.trend ?? 'unknown'}' is not 'stable' (requires stable trend)`,
+      });
+    }
+
+    // FASE 4: Log resumo final da validação temporal
     this.logger.debug('⏱️ [TEMPORAL] Final consistency check', {
       hasTemporalConsistency,
-      stability,
+      stability: stability.toFixed(3),
       isStable,
-      finalTemporalConsistency
+      finalTemporalConsistency,
+      allChecksPassed: finalTemporalConsistency,
+      failureReason: finalTemporalConsistency ? null : 
+        (!hasTemporalConsistency ? 'insufficient_indecision_ratio' :
+         (stability < 0.5 ? 'stability_too_low' :
+          (!isStable ? 'trend_not_stable' : 'unknown'))),
     });
 
     return finalTemporalConsistency;

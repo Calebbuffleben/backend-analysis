@@ -552,6 +552,28 @@ export class FeedbackAggregatorService {
       sales_category_ambiguity: evt.analysis.sales_category_ambiguity ?? null,
     };
     
+    // FASE 1: Log detalhado quando chunk é adicionado ao textHistory
+    if (historyEntry.sales_category) {
+      this.logger.debug('📝 [TEXT_HISTORY] Adding entry with sales_category to history', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        text_preview: historyEntry.text.substring(0, 50),
+        sales_category: historyEntry.sales_category,
+        sales_category_confidence: historyEntry.sales_category_confidence,
+        sales_category_intensity: historyEntry.sales_category_intensity,
+        sales_category_ambiguity: historyEntry.sales_category_ambiguity,
+        timestamp: historyEntry.timestamp,
+      });
+    } else {
+      this.logger.debug('📝 [TEXT_HISTORY] Adding entry WITHOUT sales_category to history', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        text_preview: historyEntry.text.substring(0, 50),
+        sales_category: null,
+        timestamp: historyEntry.timestamp,
+      });
+    }
+    
     // Inicializar histórico se não existir
     const currentHistory = state.textAnalysis?.textHistory ?? [];
     
@@ -562,6 +584,56 @@ export class FeedbackAggregatorService {
     const prunedHistory = updatedHistory.length > maxHistorySize
       ? updatedHistory.slice(-maxHistorySize)
       : updatedHistory;
+    
+    // FASE 1: Log resumo do histórico após adição
+    const historyWithCategory = prunedHistory.filter(entry => entry.sales_category).length;
+    this.logger.debug('📝 [TEXT_HISTORY] History updated', {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      totalEntries: prunedHistory.length,
+      entriesWithCategory: historyWithCategory,
+      lastEntryCategory: prunedHistory[prunedHistory.length - 1]?.sales_category ?? null,
+      lastEntryConfidence: prunedHistory[prunedHistory.length - 1]?.sales_category_confidence ?? null,
+    });
+    
+    // FASE 2: Validação de integridade do textHistory
+    // Garantir que o chunk atual foi adicionado corretamente ao histórico
+    const lastEntry = prunedHistory[prunedHistory.length - 1];
+    const isCurrentChunkInHistory = lastEntry && 
+      lastEntry.text === evt.text && 
+      lastEntry.timestamp === evt.timestamp;
+    
+    if (!isCurrentChunkInHistory) {
+      this.logger.warn('⚠️ [TEXT_HISTORY] Current chunk not found in history!', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        expectedText: evt.text.substring(0, 50),
+        expectedTimestamp: evt.timestamp,
+        lastEntryText: lastEntry?.text?.substring(0, 50) ?? 'null',
+        lastEntryTimestamp: lastEntry?.timestamp ?? null,
+        historyLength: prunedHistory.length,
+      });
+    } else {
+      this.logger.debug('✅ [TEXT_HISTORY] Current chunk verified in history', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        historyLength: prunedHistory.length,
+        hasSalesCategory: !!lastEntry.sales_category,
+      });
+    }
+    
+    // FASE 2: Validação de sincronização - garantir que sales_category do chunk atual
+    // está consistente entre o evento e o histórico
+    if (lastEntry && lastEntry.sales_category !== (evt.analysis.sales_category ?? null)) {
+      this.logger.warn('⚠️ [TEXT_HISTORY] Sales category mismatch between event and history!', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        eventSalesCategory: evt.analysis.sales_category ?? null,
+        historySalesCategory: lastEntry.sales_category ?? null,
+        eventConfidence: evt.analysis.sales_category_confidence ?? null,
+        historyConfidence: lastEntry.sales_category_confidence ?? null,
+      });
+    }
     
     // ========================================================================
     // Atualizar estado com análise de texto e histórico
