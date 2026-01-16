@@ -326,6 +326,21 @@ O backend gerencia automaticamente sessões de reunião através de webhooks do 
 }
 ```
 
+## IMPORTANT: Sales Category Classification
+
+**intensity vs confidence:**
+- **intensity** is used for signal collection (semantic strength, 0.0-1.0)
+  - Represents absolute match strength of the best category
+  - Use intensity for initial filtering/threshold checking
+  - Generally higher than confidence when categories are close
+  
+- **confidence** is used only for final validation (class separation, 0.0-1.0)
+  - Represents relative difference between best and second-best category
+  - Use confidence only for average confidence validation
+  - Can be low even when intensity is high (if categories are similar)
+
+**Do NOT use confidence for initial filtering** - it can be very low (e.g., 0.007) even when the semantic match is valid. Always use intensity for collection thresholds.
+
 ## Feedback em Tempo Real (Host)
 
 O backend gera feedbacks para o anfitrião com base no áudio dos participantes (Hume prosody + sinais locais).

@@ -664,47 +664,58 @@ export class DetectClientIndecision {
       // ========================================================================
       // Prioridade 1: Verificar classificação ML (SBERT) primeiro
       // ========================================================================
-      // Se o modelo ML classificou como indecisão com confiança suficiente,
+      // IMPORTANT: intensity is used for signal collection (semantic strength)
+      // confidence is used only for final validation (class separation)
+      // Do NOT use confidence for initial filtering
+      //
+      // Se o modelo ML classificou como indecisão com força semântica suficiente,
       // isso é a fonte mais confiável (ignora filtros heurísticos de texto)
       const category = entry.sales_category;
-      const confidence = entry.sales_category_confidence;
+      const intensity = entry.sales_category_intensity; // Use intensity for collection
+      const confidence = entry.sales_category_confidence; // Use confidence for validation only
       
       // FASE 1: Log detalhado de cada chunk analisado
       this.logger.debug(`🔍 [ACTIVE_INDECISION] Chunk ${chunkIndex}/${recentChunks.length}`, {
         text_preview: entry.text.substring(0, 80),
         sales_category: category,
-        sales_category_confidence: confidence,
+        sales_category_intensity: intensity, // Used for collection
+        sales_category_confidence: confidence, // Used for validation only
         category_type: typeof category,
+        intensity_type: typeof intensity,
         confidence_type: typeof confidence,
         category_is_null: category === null,
         category_is_undefined: category === undefined,
+        intensity_is_null: intensity === null,
+        intensity_is_undefined: intensity === undefined,
         confidence_is_null: confidence === null,
         confidence_is_undefined: confidence === undefined,
       });
       
       // Verificar se tem classificação ML válida
+      // IMPORTANT: Use intensity for collection (semantic strength), confidence for validation only
       // FASE 3: Usar threshold base para coleta inicial (thresholds dinâmicos aplicados depois)
       const hasCategory = category && category !== null;
       const hasIndecisionCategory = hasCategory && indecisionCategories.includes(category);
-      const hasValidConfidence = confidence !== null && confidence !== undefined;
-      const hasMinConfidence = hasValidConfidence && confidence >= baseMinConfidence;
+      const hasValidIntensity = intensity !== null && intensity !== undefined;
+      const hasMinIntensity = hasValidIntensity && intensity >= baseMinConfidence; // Use intensity for collection
       
-      const hasValidMLClassification = hasCategory && hasIndecisionCategory && hasValidConfidence && hasMinConfidence;
+      const hasValidMLClassification = hasCategory && hasIndecisionCategory && hasValidIntensity && hasMinIntensity;
       
       // FASE 1: Log detalhado da validação ML
       if (!hasValidMLClassification) {
         this.logger.debug(`❌ [ACTIVE_INDECISION] Chunk ${chunkIndex} - ML classification invalid`, {
           hasCategory,
           hasIndecisionCategory,
-          hasValidConfidence,
-          hasMinConfidence,
+          hasValidIntensity,
+          hasMinIntensity,
           category,
+          intensity,
           confidence,
           baseMinConfidence,
           reason: !hasCategory ? 'no_category' :
                   !hasIndecisionCategory ? 'not_indecision_category' :
-                  !hasValidConfidence ? 'no_confidence' :
-                  !hasMinConfidence ? `confidence_below_threshold (${confidence} < ${baseMinConfidence})` : 'unknown',
+                  !hasValidIntensity ? 'no_intensity' :
+                  !hasMinIntensity ? `intensity_below_threshold (${intensity} < ${baseMinConfidence})` : 'unknown',
         });
       }
       
@@ -714,17 +725,23 @@ export class DetectClientIndecision {
         // a classificação ML é a fonte de verdade (semântica > sintaxe)
         
         // FASE 1: Log quando chunk ML válido é encontrado
+        // Note: Use intensity for collection, but store confidence for validation
         this.logger.debug(`✅ [ACTIVE_INDECISION] Chunk ${chunkIndex} - Valid ML classification found!`, {
           text_preview: entry.text.substring(0, 80),
           category,
-          confidence,
+          intensity, // Used for collection
+          confidence, // Stored for validation only
           will_add_to_valid_signals: true,
         });
+        
+        // Store confidence for average calculation in validation
+        // Use intensity as fallback if confidence is not available
+        const confidenceForValidation = confidence ?? intensity ?? 0;
         
         validSignals.push({
           text: entry.text,
           category,
-          confidence,
+          confidence: confidenceForValidation,
         });
         continue;
       }
