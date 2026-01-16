@@ -109,7 +109,9 @@ export class AudioPipelineService {
   }
 
   private async dispatchToHume(meta: AudioChunkMeta, pcm: Buffer): Promise<void> {
-    const normalize = (process.env.AUDIO_PIPELINE_NORMALIZE || 'false') === 'true';
+    // P1.1: Normalização RMS habilitada por padrão para melhorar qualidade de transcrição
+    // Reduz alucinações em áudio com baixo volume
+    const normalize = (process.env.AUDIO_PIPELINE_NORMALIZE || 'true') === 'true';
     const payloadFormat = (process.env.AUDIO_PIPELINE_PAYLOAD || 'wav').toLowerCase(); // prefer wav for WS
     // 1) optional normalization
     let processedPcm = normalize ? this.normalizeVolume(pcm) : pcm;
