@@ -261,9 +261,9 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
 
     try {
       // Configurações otimizadas para Railway/produção
-      // Tentar WebSocket primeiro, depois polling como fallback
+      // Usar polling primeiro para garantir handshake HTTP inicial, depois upgrade para WebSocket
       this.socket = io(this.pythonServiceUrl, {
-        transports: ['websocket', 'polling'], // WebSocket primeiro (melhor para Railway)
+        transports: ['polling', 'websocket'], // Polling primeiro (necessário para handshake HTTP inicial)
         reconnection: true,
         reconnectionDelay: 2000, // Aumentar delay entre tentativas
         reconnectionAttempts: this.maxReconnectAttempts,
@@ -271,7 +271,7 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
         forceNew: true, // Forçar nova conexão a cada tentativa
         path: '/socket.io/', // Path explícito
         // Configurações adicionais para Railway
-        upgrade: true,
+        upgrade: true, // Permitir upgrade de polling para WebSocket após handshake
         rememberUpgrade: false, // Não lembrar upgrade em caso de falha
         // Headers adicionais se necessário
         extraHeaders: {},
