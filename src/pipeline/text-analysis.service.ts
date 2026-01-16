@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { io, Socket } from 'socket.io-client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -189,7 +189,7 @@ export interface TextAnalysisResult {
 }
 
 @Injectable()
-export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
+export class TextAnalysisService implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly logger = new Logger(TextAnalysisService.name);
   private socket: Socket | null = null;
   private readonly pythonServiceUrl: string;
@@ -200,6 +200,10 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
   private healthPingInterval: NodeJS.Timeout | null = null;
 
   constructor(private readonly emitter: EventEmitter2) {
+    // FASE 2: Validação de instância única do EventEmitter2
+    this.logger.log(`[EVENT_EMITTER] TextAnalysisService received EventEmitter2 instance: ${emitter.constructor.name}`);
+    this.logger.debug(`[EVENT_EMITTER] Instance type: ${typeof emitter}, has emit: ${typeof emitter.emit === 'function'}`);
+    
     // Socket.IO client adiciona automaticamente /socket.io/ ao conectar
     const rawUrl = process.env.TEXT_ANALYSIS_SERVICE_URL || 'https://text-analysis-production.up.railway.app';
 
@@ -226,14 +230,15 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  async onModuleInit() {
-    this.logger.log('🚀 TextAnalysisService onModuleInit called, attempting to connect...');
+  async onApplicationBootstrap() {
+    this.logger.log('🚀 TextAnalysisService onApplicationBootstrap called, attempting to connect...');
     this.logger.log(`[CONNECTION] Target URL: ${this.pythonServiceUrl}`);
     this.logger.log(`[CONNECTION] Environment variable TEXT_ANALYSIS_SERVICE_URL: ${process.env.TEXT_ANALYSIS_SERVICE_URL || 'NOT SET'}`);
+    this.logger.log(`[LIFECYCLE] All modules initialized, handlers @OnEvent registered - safe to connect and emit events`);
     await this.connect();
   }
 
-  async onModuleDestroy() {
+  async onApplicationShutdown() {
     this.disconnect();
   }
 
@@ -359,6 +364,10 @@ export class TextAnalysisService implements OnModuleInit, OnModuleDestroy {
           },
         );
       }
+      
+      // FASE 2: Validação - logar listeners registrados antes de emitir
+      const listenersCount = this.emitter.listenerCount('text.analysis');
+      this.logger.debug(`[EVENT_EMITTER] About to emit 'text.analysis'. Listeners count: ${listenersCount}`);
       
       // Emitir evento para integração com A2E2
       this.emitter.emit('text.analysis', data);

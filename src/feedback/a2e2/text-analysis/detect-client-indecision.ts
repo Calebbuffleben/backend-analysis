@@ -620,9 +620,10 @@ export class DetectClientIndecision {
     }
 
     const indecisionCategories = ['stalling', 'objection_soft'];
-    // FASE 3: Threshold inicial para coleta de sinais (base line, mais permissivo)
-    // Os thresholds dinâmicos serão aplicados APÓS coletar os sinais válidos
-    const baseMinConfidence = 0.15; // Threshold base para coleta inicial (mais permissivo)
+    // FASE 2: Threshold inicial para coleta de sinais (base line, mais permissivo)
+    // Reduzido de 0.15 para 0.12 para capturar sinais fracos que, em conjunto, indicam indecisão
+    // Os thresholds dinâmicos serão aplicados APENAS na validação final (average confidence)
+    const baseMinConfidence = 0.12; // Threshold base para coleta inicial (mais permissivo)
     const minSignals = 1; // Mínimo de sinais válidos
 
     // ========================================================================
@@ -762,42 +763,56 @@ export class DetectClientIndecision {
     // ========================================================================
     const signalsCount = validSignals.length;
     
-    // FASE 3: Calcular thresholds dinâmicos baseados na quantidade de sinais
-    // Lógica adaptativa:
-    // - 1 sinal: threshold mais alto (0.20) - mais conservador para evitar falsos positivos
-    // - 2+ sinais: threshold médio (0.15) - balanceado
-    // - 3+ sinais: threshold mais baixo (0.12) - mais permissivo, múltiplos sinais aumentam confiança
-    let dynamicMinConfidence: number;
+    // FASE 3: Calcular threshold dinâmico APENAS para validação final (average confidence)
+    // IMPORTANTE: Não aplicamos threshold dinâmico na coleta individual para evitar filtragem dupla
+    // que descartaria sinais já coletados com baseMinConfidence.
+    // O threshold dinâmico é aplicado APENAS na validação final (average confidence).
+    // FASE 3: Thresholds reduzidos para permitir feedbacks válidos:
+    // - 1 sinal: threshold reduzido de 0.20 para 0.15 - permite feedbacks quando há padrão claro
+    // - 2 sinais: threshold reduzido de 0.15 para 0.12 - permite feedbacks quando há múltiplos sinais
+    // - 3+ sinais: threshold reduzido de 0.12 para 0.10 - permite feedbacks quando há padrão consistente
+    // Lógica adaptativa: menos sinais = threshold mais alto (mais conservador)
     let dynamicMinAverageConfidence: number;
     
     if (signalsCount === 1) {
       // FASE 3: Com apenas 1 sinal, ser mais conservador (threshold mais alto)
-      dynamicMinConfidence = 0.20;
-      dynamicMinAverageConfidence = 0.20;
-    } else if (signalsCount >= 2 && signalsCount < 3) {
-      // FASE 3: Com 2 sinais, usar threshold padrão
-      dynamicMinConfidence = 0.15;
+      // Reduzido de 0.20 para 0.15 para permitir feedbacks válidos com 1 sinal claro
       dynamicMinAverageConfidence = 0.15;
+    } else if (signalsCount >= 2 && signalsCount < 3) {
+      // FASE 3: Com 2 sinais, usar threshold médio
+      // Reduzido de 0.15 para 0.12 para permitir feedbacks quando há múltiplos sinais
+      dynamicMinAverageConfidence = 0.12;
     } else {
       // FASE 3: Com 3+ sinais, ser mais permissivo (threshold mais baixo)
-      // Múltiplos sinais indicam padrão consistente, permitindo menor confidence individual
-      dynamicMinConfidence = 0.12;
-      dynamicMinAverageConfidence = 0.12;
+      // Reduzido de 0.12 para 0.10 - múltiplos sinais indicam padrão consistente
+      dynamicMinAverageConfidence = 0.10;
     }
     
-    // FASE 1: Log resumo da análise
+    // FASE 4: Log resumo da análise com informações detalhadas de diagnóstico
     this.logger.debug('📊 [ACTIVE_INDECISION] Analysis summary', {
       totalChunksAnalyzed: recentChunks.length,
       validSignalsCount: signalsCount,
       minSignalsRequired: minSignals,
       baseMinConfidence,
-      dynamicMinConfidence,
       dynamicMinAverageConfidence,
+      note: 'Dynamic threshold applied only to average confidence (no individual filtering)',
       validSignalsDetails: validSignals.map(s => ({
         category: s.category,
         confidence: s.confidence,
+        confidence_formatted: s.confidence.toFixed(3),
         text_preview: s.text.substring(0, 50),
       })),
+      // FASE 4: Informações adicionais de diagnóstico
+      collection_stats: {
+        signals_collected: signalsCount,
+        signals_min_required: minSignals,
+        has_enough_signals: signalsCount >= minSignals,
+        collection_threshold: baseMinConfidence,
+      },
+      validation_stats: {
+        average_confidence_threshold: dynamicMinAverageConfidence,
+        signals_count_for_threshold: signalsCount,
+      },
     });
     
     if (signalsCount < minSignals) {
@@ -815,40 +830,67 @@ export class DetectClientIndecision {
       };
     }
 
-    // FASE 3: Aplicar threshold dinâmico para confidence individual
-    // Se algum sinal não atende o threshold dinâmico, removê-lo
-    const filteredSignals = validSignals.filter(s => s.confidence >= dynamicMinConfidence);
-    const filteredSignalsCount = filteredSignals.length;
-    
-    if (filteredSignalsCount < minSignals) {
-      this.logger.debug('❌ [ACTIVE_INDECISION] Not enough signals after dynamic threshold filtering', {
-        originalSignalsCount: signalsCount,
-        filteredSignalsCount,
-        dynamicMinConfidence,
-        minSignals,
-        validSignals: validSignals.map(s => ({ category: s.category, confidence: s.confidence })),
-        filteredSignals: filteredSignals.map(s => ({ category: s.category, confidence: s.confidence })),
-        reason: `After applying dynamic threshold ${dynamicMinConfidence}, only ${filteredSignalsCount} signals remain (need at least ${minSignals})`,
-      });
-      return {
-        isActive: false,
-        validSignals: filteredSignals,
-        averageConfidence: 0,
-        signalsCount: filteredSignalsCount,
-      };
-    }
+    // FASE 1: Removida filtragem dupla - não aplicamos threshold dinâmico individual
+    // Todos os sinais coletados com baseMinConfidence são mantidos para cálculo da média
+    // O threshold dinâmico é aplicado APENAS na validação final (average confidence)
+    // Isso evita descartar sinais já coletados (ex: 1 sinal com 0.17 coletado com 0.15, mas descartado com 0.20)
+    const filteredSignals = validSignals; // Todos os sinais coletados são mantidos
+    const filteredSignalsCount = signalsCount; // Quantidade permanece a mesma
 
-    // Calcular confiança média dos sinais filtrados
+    // FASE 4: Log antes do cálculo da média
+    this.logger.debug('📊 [ACTIVE_INDECISION] Before average confidence calculation', {
+      signals_collected: filteredSignalsCount,
+      signals_maintained: filteredSignalsCount,
+      note: 'No individual filtering - all collected signals are maintained',
+      signals_confidence_values: filteredSignals.map(s => ({
+        value: s.confidence,
+        formatted: s.confidence.toFixed(3),
+      })),
+    });
+
+    // Calcular confiança média dos sinais coletados
     const averageConfidence = filteredSignals.reduce((sum, s) => sum + s.confidence, 0) / filteredSignalsCount;
 
-    // FASE 3: Aplicar threshold dinâmico para confidence média
+    // FASE 4: Log após cálculo da média
+    this.logger.debug('📊 [ACTIVE_INDECISION] Average confidence calculated', {
+      average_confidence: averageConfidence,
+      average_confidence_formatted: averageConfidence.toFixed(3),
+      signals_count: filteredSignalsCount,
+      confidence_sum: filteredSignals.reduce((sum, s) => sum + s.confidence, 0),
+      dynamic_threshold: dynamicMinAverageConfidence,
+      threshold_met: averageConfidence >= dynamicMinAverageConfidence,
+    });
+
+    // FASE 1: Aplicar threshold dinâmico APENAS na validação final (average confidence)
+    // Este é o único lugar onde o threshold dinâmico é aplicado, evitando filtragem dupla
     if (averageConfidence < dynamicMinAverageConfidence) {
+      // FASE 4: Log detalhado com razão de bloqueio e estatísticas completas
+      const confidenceValues = filteredSignals.map(s => s.confidence);
+      const confidenceGap = dynamicMinAverageConfidence - averageConfidence;
+      const confidenceGapPercentage = (confidenceGap / dynamicMinAverageConfidence) * 100;
+      
       this.logger.debug('❌ [ACTIVE_INDECISION] Average confidence too low (dynamic threshold)', {
         averageConfidence,
+        averageConfidenceFormatted: averageConfidence.toFixed(3),
         dynamicMinAverageConfidence,
         signalsCount: filteredSignalsCount,
-        confidenceValues: filteredSignals.map(s => s.confidence),
-        reason: `Average confidence ${averageConfidence.toFixed(3)} is below dynamic threshold ${dynamicMinAverageConfidence} (${filteredSignalsCount} signals)`,
+        confidenceValues,
+        confidenceValuesFormatted: confidenceValues.map(v => v.toFixed(3)),
+        // FASE 4: Estatísticas de bloqueio detalhadas
+        blocking_reason: `Average confidence ${averageConfidence.toFixed(3)} is below dynamic threshold ${dynamicMinAverageConfidence} (${filteredSignalsCount} signals)`,
+        confidence_gap: confidenceGap,
+        confidence_gap_formatted: confidenceGap.toFixed(3),
+        confidence_gap_percentage: confidenceGapPercentage.toFixed(1),
+        note: 'Dynamic threshold applied only to average confidence (no individual filtering)',
+        // FASE 4: Resumo estatístico
+        validation_summary: {
+          signals_collected: filteredSignalsCount,
+          signals_passed_validation: 0,
+          signals_blocked_by_average_threshold: filteredSignalsCount,
+          average_confidence: averageConfidence,
+          threshold_required: dynamicMinAverageConfidence,
+          threshold_not_met: true,
+        },
       });
       return {
         isActive: false,
@@ -858,13 +900,31 @@ export class DetectClientIndecision {
       };
     }
 
-    // Indecisão ativa detectada!
+    // FASE 1: Indecisão ativa detectada!
+    // FASE 4: Log detalhado com estatísticas completas de sucesso
     this.logger.debug('✅ [ACTIVE_INDECISION] Active indecision detected', {
       signalsCount: filteredSignalsCount,
       averageConfidence,
-      dynamicMinConfidence,
+      averageConfidenceFormatted: averageConfidence.toFixed(3),
       dynamicMinAverageConfidence,
-      validSignals: filteredSignals.map(s => ({ category: s.category, confidence: s.confidence, text_preview: s.text.substring(0, 50) })),
+      note: 'Dynamic threshold applied only to average confidence (no individual filtering)',
+      validSignals: filteredSignals.map(s => ({
+        category: s.category,
+        confidence: s.confidence,
+        confidenceFormatted: s.confidence.toFixed(3),
+        text_preview: s.text.substring(0, 50),
+      })),
+      // FASE 4: Estatísticas de sucesso detalhadas
+      success_summary: {
+        signals_collected: filteredSignalsCount,
+        signals_passed_validation: filteredSignalsCount,
+        average_confidence: averageConfidence,
+        threshold_required: dynamicMinAverageConfidence,
+        threshold_met: true,
+        confidence_margin: averageConfidence - dynamicMinAverageConfidence,
+        confidence_margin_formatted: (averageConfidence - dynamicMinAverageConfidence).toFixed(3),
+        confidence_margin_percentage: (((averageConfidence - dynamicMinAverageConfidence) / dynamicMinAverageConfidence) * 100).toFixed(1),
+      },
     });
 
     return {

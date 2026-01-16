@@ -379,7 +379,11 @@ export class FeedbackAggregatorService {
   constructor(
     private readonly delivery: FeedbackDeliveryService,
     private readonly index: ParticipantIndexService,
-  ) {}
+  ) {
+    // FASE 2: Validação - confirmar que handlers @OnEvent estão sendo registrados
+    this.logger.log(`[EVENT_EMITTER] FeedbackAggregatorService initialized with @OnEvent handlers`);
+    this.logger.debug(`[EVENT_EMITTER] Service instance created, handlers will be registered by NestJS`);
+  }
 
   @OnEvent('feedback.ingestion', { async: true })
   handleIngestion(evt: FeedbackIngestionEvent): void {
@@ -448,7 +452,17 @@ export class FeedbackAggregatorService {
   }
 
   @OnEvent('text.analysis', { async: true })
-  handleTextAnalysis(evt: TextAnalysisResult): void {
+  async handleTextAnalysis(evt: TextAnalysisResult): Promise<void> {
+    // FASE 3: Log imediato para confirmar que handler está registrado e sendo executado
+    this.logger.log('✅ [SANITY] handleTextAnalysis() called - handler is registered and working', {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      textLength: evt.text?.length ?? 0,
+      textPreview: evt.text?.substring(0, 50) ?? 'null',
+      hasSalesCategory: !!evt.analysis?.sales_category,
+      salesCategory: evt.analysis?.sales_category ?? 'null',
+    });
+    
     const key = this.key(evt.meetingId, evt.participantId);
     let state = this.byKey.get(key);
 
