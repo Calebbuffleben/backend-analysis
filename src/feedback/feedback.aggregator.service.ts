@@ -2484,6 +2484,7 @@ export class FeedbackAggregatorService {
     const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 5;
     const hasEnoughData = chunksCount >= minChunks;
     
+    
     this.logger.debug('📊 [INDECISION] Data volume check', {
       chunksCount,
       hasEnoughData,
