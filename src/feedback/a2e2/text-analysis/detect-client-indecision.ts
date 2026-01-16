@@ -596,14 +596,26 @@ export class DetectClientIndecision {
     averageConfidence: number;
     signalsCount: number;
   } | null {
+    // FASE 4: Log IMEDIATO no início para diagnóstico
+    this.logger.debug('🔍 [ACTIVE_INDECISION] Method called', {
+      hasTextAnalysis: !!state.textAnalysis,
+      textHistoryLength: state.textAnalysis?.textHistory?.length ?? 0,
+      maxChunks,
+    });
+    
     const textAnalysis = state.textAnalysis;
     if (!textAnalysis) {
+      this.logger.debug('🔍 [ACTIVE_INDECISION] No text analysis data - returning null');
       return null;
     }
 
     const textHistory = textAnalysis.textHistory ?? [];
     if (textHistory.length === 0) {
-      this.logger.debug('🔍 [ACTIVE_INDECISION] No text history');
+      this.logger.debug('🔍 [ACTIVE_INDECISION] No text history - returning null', {
+        textHistoryIsUndefined: textAnalysis.textHistory === undefined,
+        textHistoryIsNull: textAnalysis.textHistory === null,
+        textHistoryLength: textHistory.length,
+      });
       return null;
     }
 
