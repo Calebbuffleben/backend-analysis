@@ -99,12 +99,36 @@ export class DetectClientIndecision {
       return null;
     }
     
-    // Garantir que textHistory existe e não está vazio
-    // Se o histórico não foi inicializado corretamente, não há dados para analisar
+    // PRIORIDADE 3: Permitir detecção mesmo com histórico vazio se houver sinal forte no chunk atual
+    // Garantir que textHistory existe
     const textHistory = textAnalysis.textHistory ?? [];
+    
+    // PRIORIDADE 3: Se histórico vazio, verificar se chunk atual tem sinal forte o suficiente
     if (textHistory.length === 0) {
-      this.logger.debug('❌ [INDECISION] No text history available');
-      return null;
+      const currentIntensity = textAnalysis.sales_category_intensity ?? 0;
+      const currentCategory = textAnalysis.sales_category;
+      const hasStrongSignal = currentCategory && 
+                              ['stalling', 'objection_soft'].includes(currentCategory) &&
+                              currentIntensity >= 0.30; // Threshold alto para detecção sem histórico
+      
+      if (!hasStrongSignal) {
+        this.logger.debug('❌ [INDECISION] No text history available and current chunk has weak/absent signal', {
+          textHistoryLength: 0,
+          currentCategory,
+          currentIntensity,
+          minIntensityForDirectDetection: 0.30,
+        });
+        return null;
+      }
+      
+      // PRIORIDADE 3: Sinal forte no chunk atual - permitir detecção mesmo sem histórico
+      this.logger.debug('✅ [INDECISION] Allowing detection with empty history due to strong current signal', {
+        textHistoryLength: 0,
+        currentCategory,
+        currentIntensity,
+        note: 'PRIORIDADE 3: Strong signal (intensity >= 0.30) allows detection without history',
+      });
+      // Continua com histórico vazio (detectActiveIndecision() precisará lidar com isso)
     }
     
     // FASE 2: Validação de integridade do textHistory
@@ -162,42 +186,49 @@ export class DetectClientIndecision {
     const activeIndecision = this.detectActiveIndecision(state, 5);
 
     if (!activeIndecision || !activeIndecision.isActive) {
-      // FASE 4: Log detalhado quando indecisão ativa não é detectada
+      // PRIORIDADE 1: Log detalhado quando indecisão ativa não é detectada (usando intensity)
       const textAnalysis = state.textAnalysis;
       this.logger.debug('❌ [INDECISION] No active indecision detected', {
         signalsCount: activeIndecision?.signalsCount ?? 0,
+        averageIntensity: activeIndecision?.averageIntensity?.toFixed(3) ?? '0.000',
         averageConfidence: activeIndecision?.averageConfidence?.toFixed(3) ?? '0.000',
         validSignals: activeIndecision?.validSignals?.map(s => ({
           category: s.category,
+          intensity: s.intensity.toFixed(3),
           confidence: s.confidence.toFixed(3),
           text_preview: s.text.substring(0, 50),
         })) ?? [],
         reason: !activeIndecision ? 'detectActiveIndecision returned null' :
                 activeIndecision.signalsCount < 1 ? `Only ${activeIndecision.signalsCount} valid signals (need >= 1)` :
-                activeIndecision.averageConfidence < 0.15 ? `Average confidence ${activeIndecision.averageConfidence.toFixed(3)} too low` :
+                activeIndecision.averageIntensity < 0.10 ? `Average intensity ${activeIndecision.averageIntensity.toFixed(3)} too low` :
                 'unknown',
         textHistoryLength: textAnalysis?.textHistory?.length ?? 0,
         currentSalesCategory: textAnalysis?.sales_category ?? null,
+        currentSalesCategoryIntensity: textAnalysis?.sales_category_intensity?.toFixed(3) ?? null,
         currentSalesCategoryConfidence: textAnalysis?.sales_category_confidence?.toFixed(3) ?? null,
+        note: 'PRIORIDADE 1: Validation uses average INTENSITY, not confidence',
       });
       return null;
     }
 
-    // Confidence passa a ser a média dos sinais válidos
+    // PRIORIDADE 1: Confidence passa a ser a média de INTENSITY (não confidence) dos sinais válidos
     // Nota: detectActiveIndecision() já garante que se isActive: true,
-    // então averageConfidence >= minAverageConfidence (dinâmico), então não precisamos verificar novamente
-    const confidence = activeIndecision.averageConfidence;
+    // então averageIntensity >= dynamicMinAverageIntensity (dinâmico), então não precisamos verificar novamente
+    const confidence = activeIndecision.averageIntensity; // PRIORIDADE 1: Usar intensity como confidence final
 
     // FASE 4: Log detalhado de confidence final e métricas relacionadas
     // Nota: textAnalysis já foi declarado anteriormente no escopo da função
     const indecisionMetrics = textAnalysis?.indecision_metrics;
     const salesCategoryFlags = textAnalysis?.sales_category_flags;
     
-    this.logger.debug('📊 [INDECISION] Active indecision confidence and metrics', {
-      confidence: confidence.toFixed(3),
+    this.logger.debug('📊 [INDECISION] Active indecision intensity and metrics', {
+      confidence: confidence.toFixed(3), // PRIORIDADE 1: confidence é na verdade averageIntensity
+      averageIntensity: activeIndecision.averageIntensity.toFixed(3),
+      averageConfidence: activeIndecision.averageConfidence.toFixed(3),
       signalsCount: activeIndecision.signalsCount,
       validSignalsDetails: activeIndecision.validSignals.map(s => ({
         category: s.category,
+        intensity: s.intensity.toFixed(3),
         confidence: s.confidence.toFixed(3),
         text_preview: s.text.substring(0, 50),
       })),
@@ -592,7 +623,8 @@ export class DetectClientIndecision {
     maxChunks: number = 5
   ): {
     isActive: boolean;
-    validSignals: Array<{ text: string; category: string; confidence: number }>;
+    validSignals: Array<{ text: string; category: string; intensity: number; confidence: number }>;
+    averageIntensity: number;
     averageConfidence: number;
     signalsCount: number;
   } | null {
@@ -620,10 +652,9 @@ export class DetectClientIndecision {
     }
 
     const indecisionCategories = ['stalling', 'objection_soft'];
-    // FASE 2: Threshold inicial para coleta de sinais (base line, mais permissivo)
-    // Reduzido de 0.15 para 0.12 para capturar sinais fracos que, em conjunto, indicam indecisão
-    // Os thresholds dinâmicos serão aplicados APENAS na validação final (average confidence)
-    const baseMinConfidence = 0.12; // Threshold base para coleta inicial (mais permissivo)
+    // PRIORIDADE 2: Threshold inicial reduzido para 0.05 (de 0.12) para capturar sinais fracos
+    // Os thresholds dinâmicos serão aplicados APENAS na validação final (average intensity)
+    const baseMinConfidence = 0.05; // Threshold base para coleta inicial (muito permissivo)
     const minSignals = 1; // Mínimo de sinais válidos
 
     // ========================================================================
@@ -650,7 +681,8 @@ export class DetectClientIndecision {
     // ========================================================================
     // Filtrar chunks não semânticos e extrair sinais válidos
     // ========================================================================
-    const validSignals: Array<{ text: string; category: string; confidence: number }> = [];
+    // PRIORIDADE 1: Armazenar intensity (não confidence) para validação final
+    const validSignals: Array<{ text: string; category: string; intensity: number; confidence: number }> = [];
 
     this.logger.debug('🔍 [ACTIVE_INDECISION] Analyzing chunks', {
       totalChunks: recentChunks.length,
@@ -734,14 +766,16 @@ export class DetectClientIndecision {
           will_add_to_valid_signals: true,
         });
         
-        // Store confidence for average calculation in validation
-        // Use intensity as fallback if confidence is not available
-        const confidenceForValidation = confidence ?? intensity ?? 0;
+        // PRIORIDADE 1: Armazenar intensity (não confidence) para validação final
+        // intensity representa força semântica real, confidence pode ser muito baixo
+        const intensityForValidation = intensity ?? 0;
+        const confidenceForLogging = confidence ?? 0;
         
         validSignals.push({
           text: entry.text,
           category,
-          confidence: confidenceForValidation,
+          intensity: intensityForValidation, // PRIORIDADE 1: Usar intensity para validação
+          confidence: confidenceForLogging, // Manter confidence apenas para logs
         });
         continue;
       }
@@ -780,29 +814,25 @@ export class DetectClientIndecision {
     // ========================================================================
     const signalsCount = validSignals.length;
     
-    // FASE 3: Calcular threshold dinâmico APENAS para validação final (average confidence)
+    // PRIORIDADE 1: Calcular threshold dinâmico para validação final usando AVERAGE INTENSITY
     // IMPORTANTE: Não aplicamos threshold dinâmico na coleta individual para evitar filtragem dupla
-    // que descartaria sinais já coletados com baseMinConfidence.
-    // O threshold dinâmico é aplicado APENAS na validação final (average confidence).
-    // FASE 3: Thresholds reduzidos para permitir feedbacks válidos:
-    // - 1 sinal: threshold reduzido de 0.20 para 0.15 - permite feedbacks quando há padrão claro
-    // - 2 sinais: threshold reduzido de 0.15 para 0.12 - permite feedbacks quando há múltiplos sinais
-    // - 3+ sinais: threshold reduzido de 0.12 para 0.10 - permite feedbacks quando há padrão consistente
+    // O threshold dinâmico é aplicado APENAS na validação final (average intensity).
+    // Thresholds adaptativos:
+    // - 1 sinal: threshold 0.15 - permite feedbacks quando há padrão claro
+    // - 2 sinais: threshold 0.12 - permite feedbacks quando há múltiplos sinais
+    // - 3+ sinais: threshold 0.10 - permite feedbacks quando há padrão consistente
     // Lógica adaptativa: menos sinais = threshold mais alto (mais conservador)
-    let dynamicMinAverageConfidence: number;
+    let dynamicMinAverageIntensity: number;
     
     if (signalsCount === 1) {
-      // FASE 3: Com apenas 1 sinal, ser mais conservador (threshold mais alto)
-      // Reduzido de 0.20 para 0.15 para permitir feedbacks válidos com 1 sinal claro
-      dynamicMinAverageConfidence = 0.15;
+      // PRIORIDADE 1: Com apenas 1 sinal, ser mais conservador (threshold mais alto)
+      dynamicMinAverageIntensity = 0.15;
     } else if (signalsCount >= 2 && signalsCount < 3) {
-      // FASE 3: Com 2 sinais, usar threshold médio
-      // Reduzido de 0.15 para 0.12 para permitir feedbacks quando há múltiplos sinais
-      dynamicMinAverageConfidence = 0.12;
+      // PRIORIDADE 1: Com 2 sinais, usar threshold médio
+      dynamicMinAverageIntensity = 0.12;
     } else {
-      // FASE 3: Com 3+ sinais, ser mais permissivo (threshold mais baixo)
-      // Reduzido de 0.12 para 0.10 - múltiplos sinais indicam padrão consistente
-      dynamicMinAverageConfidence = 0.10;
+      // PRIORIDADE 1: Com 3+ sinais, ser mais permissivo (threshold mais baixo)
+      dynamicMinAverageIntensity = 0.10;
     }
     
     // FASE 4: Log resumo da análise com informações detalhadas de diagnóstico
@@ -811,10 +841,12 @@ export class DetectClientIndecision {
       validSignalsCount: signalsCount,
       minSignalsRequired: minSignals,
       baseMinConfidence,
-      dynamicMinAverageConfidence,
-      note: 'Dynamic threshold applied only to average confidence (no individual filtering)',
+      dynamicMinAverageIntensity,
+      note: 'PRIORIDADE 1: Dynamic threshold applied to average INTENSITY (not confidence)',
       validSignalsDetails: validSignals.map(s => ({
         category: s.category,
+        intensity: s.intensity,
+        intensity_formatted: s.intensity.toFixed(3),
         confidence: s.confidence,
         confidence_formatted: s.confidence.toFixed(3),
         text_preview: s.text.substring(0, 50),
@@ -827,8 +859,9 @@ export class DetectClientIndecision {
         collection_threshold: baseMinConfidence,
       },
       validation_stats: {
-        average_confidence_threshold: dynamicMinAverageConfidence,
+        average_intensity_threshold: dynamicMinAverageIntensity,
         signals_count_for_threshold: signalsCount,
+        note: 'PRIORIDADE 1: Validating average INTENSITY, not confidence',
       },
     });
     
@@ -842,6 +875,7 @@ export class DetectClientIndecision {
       return {
         isActive: false,
         validSignals,
+        averageIntensity: 0,
         averageConfidence: 0,
         signalsCount,
       };
@@ -854,99 +888,122 @@ export class DetectClientIndecision {
     const filteredSignals = validSignals; // Todos os sinais coletados são mantidos
     const filteredSignalsCount = signalsCount; // Quantidade permanece a mesma
 
-    // FASE 4: Log antes do cálculo da média
-    this.logger.debug('📊 [ACTIVE_INDECISION] Before average confidence calculation', {
+    // PRIORIDADE 1: Log antes do cálculo da média (intensity e confidence)
+    this.logger.debug('📊 [ACTIVE_INDECISION] Before average calculation', {
       signals_collected: filteredSignalsCount,
       signals_maintained: filteredSignalsCount,
       note: 'No individual filtering - all collected signals are maintained',
+      signals_intensity_values: filteredSignals.map(s => ({
+        value: s.intensity,
+        formatted: s.intensity.toFixed(3),
+      })),
       signals_confidence_values: filteredSignals.map(s => ({
         value: s.confidence,
         formatted: s.confidence.toFixed(3),
       })),
     });
 
-    // Calcular confiança média dos sinais coletados
+    // PRIORIDADE 1: Calcular média de INTENSITY (não confidence) para validação final
+    const averageIntensity = filteredSignals.reduce((sum, s) => sum + s.intensity, 0) / filteredSignalsCount;
+    
+    // Calcular média de confidence apenas para logs e retrocompatibilidade
     const averageConfidence = filteredSignals.reduce((sum, s) => sum + s.confidence, 0) / filteredSignalsCount;
 
-    // FASE 4: Log após cálculo da média
-    this.logger.debug('📊 [ACTIVE_INDECISION] Average confidence calculated', {
+    // PRIORIDADE 1: Log após cálculo da média
+    this.logger.debug('📊 [ACTIVE_INDECISION] Average calculated', {
+      average_intensity: averageIntensity,
+      average_intensity_formatted: averageIntensity.toFixed(3),
       average_confidence: averageConfidence,
       average_confidence_formatted: averageConfidence.toFixed(3),
       signals_count: filteredSignalsCount,
+      intensity_sum: filteredSignals.reduce((sum, s) => sum + s.intensity, 0),
       confidence_sum: filteredSignals.reduce((sum, s) => sum + s.confidence, 0),
-      dynamic_threshold: dynamicMinAverageConfidence,
-      threshold_met: averageConfidence >= dynamicMinAverageConfidence,
+      dynamic_threshold: dynamicMinAverageIntensity,
+      threshold_met: averageIntensity >= dynamicMinAverageIntensity,
+      note: 'PRIORIDADE 1: Validating average INTENSITY, not confidence',
     });
 
-    // FASE 1: Aplicar threshold dinâmico APENAS na validação final (average confidence)
+    // PRIORIDADE 1: Aplicar threshold dinâmico APENAS na validação final usando AVERAGE INTENSITY
     // Este é o único lugar onde o threshold dinâmico é aplicado, evitando filtragem dupla
-    if (averageConfidence < dynamicMinAverageConfidence) {
-      // FASE 4: Log detalhado com razão de bloqueio e estatísticas completas
-      const confidenceValues = filteredSignals.map(s => s.confidence);
-      const confidenceGap = dynamicMinAverageConfidence - averageConfidence;
-      const confidenceGapPercentage = (confidenceGap / dynamicMinAverageConfidence) * 100;
+    if (averageIntensity < dynamicMinAverageIntensity) {
+      // PRIORIDADE 1: Log detalhado com razão de bloqueio usando intensity
+      const intensityValues = filteredSignals.map(s => s.intensity);
+      const intensityGap = dynamicMinAverageIntensity - averageIntensity;
+      const intensityGapPercentage = (intensityGap / dynamicMinAverageIntensity) * 100;
       
-      this.logger.debug('❌ [ACTIVE_INDECISION] Average confidence too low (dynamic threshold)', {
+      this.logger.debug('❌ [ACTIVE_INDECISION] Average intensity too low (dynamic threshold)', {
+        averageIntensity,
+        averageIntensityFormatted: averageIntensity.toFixed(3),
         averageConfidence,
         averageConfidenceFormatted: averageConfidence.toFixed(3),
-        dynamicMinAverageConfidence,
+        dynamicMinAverageIntensity,
         signalsCount: filteredSignalsCount,
-        confidenceValues,
-        confidenceValuesFormatted: confidenceValues.map(v => v.toFixed(3)),
-        // FASE 4: Estatísticas de bloqueio detalhadas
-        blocking_reason: `Average confidence ${averageConfidence.toFixed(3)} is below dynamic threshold ${dynamicMinAverageConfidence} (${filteredSignalsCount} signals)`,
-        confidence_gap: confidenceGap,
-        confidence_gap_formatted: confidenceGap.toFixed(3),
-        confidence_gap_percentage: confidenceGapPercentage.toFixed(1),
-        note: 'Dynamic threshold applied only to average confidence (no individual filtering)',
-        // FASE 4: Resumo estatístico
+        intensityValues,
+        intensityValuesFormatted: intensityValues.map(v => v.toFixed(3)),
+        confidenceValues: filteredSignals.map(s => s.confidence),
+        confidenceValuesFormatted: filteredSignals.map(s => s.confidence.toFixed(3)),
+        // PRIORIDADE 1: Estatísticas de bloqueio usando intensity
+        blocking_reason: `Average intensity ${averageIntensity.toFixed(3)} is below dynamic threshold ${dynamicMinAverageIntensity} (${filteredSignalsCount} signals)`,
+        intensity_gap: intensityGap,
+        intensity_gap_formatted: intensityGap.toFixed(3),
+        intensity_gap_percentage: intensityGapPercentage.toFixed(1),
+        note: 'PRIORIDADE 1: Dynamic threshold applied to average INTENSITY (not confidence)',
+        // Resumo estatístico
         validation_summary: {
           signals_collected: filteredSignalsCount,
           signals_passed_validation: 0,
           signals_blocked_by_average_threshold: filteredSignalsCount,
+          average_intensity: averageIntensity,
           average_confidence: averageConfidence,
-          threshold_required: dynamicMinAverageConfidence,
+          threshold_required: dynamicMinAverageIntensity,
           threshold_not_met: true,
         },
       });
       return {
         isActive: false,
         validSignals: filteredSignals,
+        averageIntensity,
         averageConfidence,
         signalsCount: filteredSignalsCount,
       };
     }
 
-    // FASE 1: Indecisão ativa detectada!
-    // FASE 4: Log detalhado com estatísticas completas de sucesso
+    // PRIORIDADE 1: Indecisão ativa detectada!
+    // Log detalhado com estatísticas completas de sucesso (usando intensity)
     this.logger.debug('✅ [ACTIVE_INDECISION] Active indecision detected', {
       signalsCount: filteredSignalsCount,
+      averageIntensity,
+      averageIntensityFormatted: averageIntensity.toFixed(3),
       averageConfidence,
       averageConfidenceFormatted: averageConfidence.toFixed(3),
-      dynamicMinAverageConfidence,
-      note: 'Dynamic threshold applied only to average confidence (no individual filtering)',
+      dynamicMinAverageIntensity,
+      note: 'PRIORIDADE 1: Dynamic threshold applied to average INTENSITY (not confidence)',
       validSignals: filteredSignals.map(s => ({
         category: s.category,
+        intensity: s.intensity,
+        intensityFormatted: s.intensity.toFixed(3),
         confidence: s.confidence,
         confidenceFormatted: s.confidence.toFixed(3),
         text_preview: s.text.substring(0, 50),
       })),
-      // FASE 4: Estatísticas de sucesso detalhadas
+      // Estatísticas de sucesso detalhadas usando intensity
       success_summary: {
         signals_collected: filteredSignalsCount,
         signals_passed_validation: filteredSignalsCount,
+        average_intensity: averageIntensity,
         average_confidence: averageConfidence,
-        threshold_required: dynamicMinAverageConfidence,
+        threshold_required: dynamicMinAverageIntensity,
         threshold_met: true,
-        confidence_margin: averageConfidence - dynamicMinAverageConfidence,
-        confidence_margin_formatted: (averageConfidence - dynamicMinAverageConfidence).toFixed(3),
-        confidence_margin_percentage: (((averageConfidence - dynamicMinAverageConfidence) / dynamicMinAverageConfidence) * 100).toFixed(1),
+        intensity_margin: averageIntensity - dynamicMinAverageIntensity,
+        intensity_margin_formatted: (averageIntensity - dynamicMinAverageIntensity).toFixed(3),
+        intensity_margin_percentage: (((averageIntensity - dynamicMinAverageIntensity) / dynamicMinAverageIntensity) * 100).toFixed(1),
       },
     });
 
     return {
       isActive: true,
       validSignals: filteredSignals,
+      averageIntensity,
       averageConfidence,
       signalsCount: filteredSignalsCount,
     };
