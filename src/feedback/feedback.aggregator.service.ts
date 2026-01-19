@@ -2282,6 +2282,7 @@ export class FeedbackAggregatorService {
    * 
    * Verifica se o padrão de indecisão se mantém consistente ao longo de uma
    * janela temporal, analisando múltiplos fatores:
+   * - Sinais fortes suficientes na janela (>= 2 com intensidade >= 0.25) OU
    * - Proporção de textos de indecisão na janela (>= 70%)
    * - Estabilidade da categoria dominante (>= 0.5)
    * - Tendência estável (sem progresso ou regressão)
@@ -2289,11 +2290,12 @@ export class FeedbackAggregatorService {
    * @param state Estado do participante contendo histórico de textos
    * @param now Timestamp atual em milissegundos
    * @param windowMs Janela temporal em milissegundos (padrão: 60000 = 60s)
+   * @param allowWeakTrend Permite consistência mesmo sem tendência estável
    * @returns true se o padrão é consistente, false caso contrário
    * 
    * @example
    * ```typescript
-   * const isConsistent = this.calculateTemporalConsistency(state, now, 60000);
+   * const isConsistent = this.calculateTemporalConsistency(state, now, 60000, true);
    * if (isConsistent) {
    *   // Padrão se mantém consistente ao longo do tempo
    * }
@@ -2302,7 +2304,8 @@ export class FeedbackAggregatorService {
   private calculateTemporalConsistency(
     state: ParticipantState,
     now: number,
-    windowMs: number = 60000 // Últimos 60 segundos
+    windowMs: number = 60000, // Últimos 60 segundos
+    allowWeakTrend: boolean = false
   ): boolean {
     const textAnalysis = state.textAnalysis;
     if (!textAnalysis) {
@@ -2326,7 +2329,7 @@ export class FeedbackAggregatorService {
     }
     
     // ========================================================================
-    // Contar textos com categoria de indecisão e confiança mínima
+    // Contar textos com categoria de indecisão e intensidade mínima
     // ========================================================================
     const indecisionTexts = windowTexts.filter(entry => {
       // Verificar se tem categoria de indecisão
@@ -2334,13 +2337,24 @@ export class FeedbackAggregatorService {
         return false;
       }
       
-      // Verificar confiança mínima (>= 0.6)
-      if ((entry.sales_category_confidence ?? 0) < 0.6) {
+      // Verificar intensidade mínima (>= 0.25)
+      if ((entry.sales_category_intensity ?? 0) < 0.25) {
         return false;
       }
       
       return true;
     });
+
+    // ========================================================================
+    // Caminho permissivo: poucos sinais fortes em conversa longa
+    // ========================================================================
+    const indecisionCount = indecisionTexts.length;
+    const avgIntensity = indecisionCount > 0
+      ? indecisionTexts.reduce((sum, entry) => sum + (entry.sales_category_intensity ?? 0), 0) / indecisionCount
+      : 0;
+    if (indecisionCount >= 2 && avgIntensity >= 0.25) {
+      return true;
+    }
     
     // ========================================================================
     // Verificar proporção mínima (70% dos chunks devem ser de indecisão)
@@ -2369,7 +2383,37 @@ export class FeedbackAggregatorService {
     const trend = textAnalysis.sales_category_trend;
     const isStable = trend?.trend === 'stable';
     
-    return isStable;
+    if (isStable) {
+      return true;
+    }
+
+    // Se há sinal forte recente, não exigir tendência estável.
+    return allowWeakTrend;
+  }
+
+  private hasRecentStrongIndecisionSignal(
+    state: ParticipantState,
+    now: number,
+    windowMs: number = 30000,
+    minIntensity: number = 0.30,
+  ): boolean {
+    const textHistory = state.textAnalysis?.textHistory ?? [];
+    if (textHistory.length === 0) {
+      return false;
+    }
+
+    const cutoffTime = now - windowMs;
+    const indecisionCategories = ['stalling', 'objection_soft'];
+
+    return textHistory.some(entry => {
+      if (entry.timestamp < cutoffTime) {
+        return false;
+      }
+      if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
+        return false;
+      }
+      return (entry.sales_category_intensity ?? 0) >= minIntensity;
+    });
   }
 
   // ========================================================================
@@ -2560,21 +2604,26 @@ export class FeedbackAggregatorService {
     }
     
     // ========================================================================
-    // Verificar volume mínimo de dados
+    // Verificar volume mínimo de dados (ajustável por sinal forte recente)
     // ========================================================================
-    // Requer pelo menos 5 chunks com categoria para análise confiável
+    // Requer pelo menos 5 chunks com categoria para análise confiável.
+    // Se houver sinal forte recente, reduzimos o mínimo para não bloquear
+    // indecisão em conversas longas com temas mistos.
     const aggregated = textAnalysis.sales_category_aggregated;
     const chunksCount = aggregated?.chunks_with_category ?? 0;
     const minChunksRaw = process.env.SALES_CLIENT_INDECISION_MIN_CHUNKS;
     const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 5;
     const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 5;
-    const hasEnoughData = chunksCount >= minChunks;
+    const hasRecentStrongSignal = this.hasRecentStrongIndecisionSignal(state, now, 30000, 0.30);
+    const effectiveMinChunks = hasRecentStrongSignal ? Math.min(minChunks, 2) : minChunks;
+    const hasEnoughData = chunksCount >= effectiveMinChunks;
     
     
     this.logger.debug('📊 [INDECISION] Data volume check', {
       chunksCount,
       hasEnoughData,
-      threshold: minChunks,
+      threshold: effectiveMinChunks,
+      hasRecentStrongSignal,
     });
     
     if (!hasEnoughData) {
@@ -2604,7 +2653,7 @@ export class FeedbackAggregatorService {
     // Calcular consistência temporal
     // ========================================================================
     // Verifica se o padrão se mantém consistente ao longo do tempo
-    const temporalConsistency = this.calculateTemporalConsistency(state, now, 60000);
+    const temporalConsistency = this.calculateTemporalConsistency(state, now, 60000, hasRecentStrongSignal);
     
     this.logger.debug('⏱️ [INDECISION] Temporal consistency', {
       temporalConsistency,

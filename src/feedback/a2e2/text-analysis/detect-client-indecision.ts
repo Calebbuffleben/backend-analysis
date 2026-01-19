@@ -1,5 +1,5 @@
 import { TextAnalysisResult } from "@/pipeline/text-analysis.service";
-import { DetectionContext, ParticipantState } from "../types";
+import { DetectionContext, ParticipantState, TextHistoryEntry } from "../types";
 import { FeedbackEventPayload } from "@/feedback/feedback.types";
 import { Logger } from "@nestjs/common";
 
@@ -186,8 +186,74 @@ export class DetectClientIndecision {
     const activeIndecision = this.detectActiveIndecision(state, 5);
 
     if (!activeIndecision || !activeIndecision.isActive) {
+      // Fallback para conversas longas: verificar sinais fortes recentes na janela temporal
+      const recentSignals = this.getRecentIndecisionSignals(state, now, 60000, 0.25);
+      const recentSignalsCount = recentSignals.length;
+      const recentAverageIntensity = recentSignalsCount > 0
+        ? recentSignals.reduce((sum, entry) => sum + (entry.sales_category_intensity ?? 0), 0) / recentSignalsCount
+        : 0;
+      const hasRecentStrongPattern = recentSignalsCount >= 2 && recentAverageIntensity >= 0.25;
+
+      if (hasRecentStrongPattern) {
+        this.logger.debug('✅ [INDECISION] Using recent strong signals fallback (long conversation)', {
+          recentSignalsCount,
+          recentAverageIntensity: recentAverageIntensity.toFixed(3),
+          windowMs: 60000,
+          minIntensity: 0.25,
+        });
+
+        const confidence = recentAverageIntensity;
+        let representativePhrases = this.extractRepresentativePhrases(
+          state,
+          5,
+          5,
+          0.15,
+        );
+
+        if (representativePhrases.length === 0) {
+          const current = (evt.text || '').trim();
+          if (current) {
+            const maxLen = 180;
+            const snippet = current.length > maxLen ? `${current.slice(0, maxLen - 3)}...` : current;
+            representativePhrases = [snippet];
+          }
+        }
+
+        const window = this.window(state, now, 60000);
+        if (effectiveIndecisionCooldownMs > 0) {
+          this.setCooldown(
+            state,
+            'sales_client_indecision',
+            now,
+            effectiveIndecisionCooldownMs,
+          );
+        }
+
+        return {
+          id: this.makeId(),
+          type: 'sales_client_indecision',
+          severity: 'warning',
+          ts: now,
+          meetingId: evt.meetingId,
+          participantId: evt.participantId,
+          participantName: this.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+          window: { start: window.start, end: window.end },
+          message: '⏳ Cliente demonstrando indecisão',
+          tips: ['Pergunte o que está travando', 'Proponha próximo passo concreto'],
+          metadata: {
+            confidence: Math.round(confidence * 100) / 100,
+            recent_signals_count: recentSignalsCount,
+            recent_average_intensity: Math.round(recentAverageIntensity * 100) / 100,
+            representative_phrases: representativePhrases,
+            sales_category: textAnalysis?.sales_category ?? undefined,
+            sales_category_confidence: textAnalysis?.sales_category_confidence ?? undefined,
+            indecision_metrics: textAnalysis?.indecision_metrics ?? undefined,
+            conditional_keywords_detected: textAnalysis?.conditional_keywords_detected ?? undefined,
+          },
+        };
+      }
+
       // PRIORIDADE 1: Log detalhado quando indecisão ativa não é detectada (usando intensity)
-      const textAnalysis = state.textAnalysis;
       this.logger.debug('❌ [INDECISION] No active indecision detected', {
         signalsCount: activeIndecision?.signalsCount ?? 0,
         averageIntensity: activeIndecision?.averageIntensity?.toFixed(3) ?? '0.000',
@@ -1007,6 +1073,31 @@ export class DetectClientIndecision {
       averageConfidence,
       signalsCount: filteredSignalsCount,
     };
+  }
+
+  private getRecentIndecisionSignals(
+    state: ParticipantState,
+    now: number,
+    windowMs: number = 60000,
+    minIntensity: number = 0.25,
+  ): TextHistoryEntry[] {
+    const textHistory = state.textAnalysis?.textHistory ?? [];
+    if (textHistory.length === 0) {
+      return [];
+    }
+
+    const cutoffTime = now - windowMs;
+    const indecisionCategories = ['stalling', 'objection_soft'];
+
+    return textHistory.filter(entry => {
+      if (entry.timestamp < cutoffTime) {
+        return false;
+      }
+      if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
+        return false;
+      }
+      return (entry.sales_category_intensity ?? 0) >= minIntensity;
+    });
   }
 
   private calculateTemporalConsistency(
