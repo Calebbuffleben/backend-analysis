@@ -116,6 +116,18 @@ type ParticipantState = {
       conditional_language_signal?: boolean;
     } | null;
     /**
+     * Score absoluto da melhor categoria (0.0 a 1.0).
+     */
+    sales_category_best_score?: number;
+    /**
+     * Scores de todas as categorias (debug/diagnóstico).
+     */
+    sales_category_scores?: Record<string, number>;
+    /**
+     * Top 3 categorias com scores (debug/diagnóstico).
+     */
+    sales_category_top_3?: Array<{ category: string; score: number }>;
+    /**
      * Agregação temporal de categorias baseada em janela de contexto.
      */
     sales_category_aggregated?: {
@@ -681,6 +693,9 @@ export class FeedbackAggregatorService {
       sales_category_intensity: evt.analysis.sales_category_intensity ?? undefined,
       sales_category_ambiguity: evt.analysis.sales_category_ambiguity ?? undefined,
       sales_category_flags: evt.analysis.sales_category_flags ?? undefined,
+      sales_category_best_score: evt.analysis.sales_category_best_score ?? undefined,
+      sales_category_scores: evt.analysis.sales_category_scores ?? undefined,
+      sales_category_top_3: evt.analysis.sales_category_top_3 ?? undefined,
       // Análises contextuais (baseadas em histórico)
       sales_category_aggregated: evt.analysis.sales_category_aggregated ?? undefined,
       sales_category_transition: evt.analysis.sales_category_transition ?? undefined,

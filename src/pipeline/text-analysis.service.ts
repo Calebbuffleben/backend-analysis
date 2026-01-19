@@ -100,6 +100,19 @@ export interface TextAnalysisResult {
       solution_reformulation_signal?: boolean;
     } | null;
     /**
+     * Score absoluto da melhor categoria (0.0 a 1.0).
+     * Útil para debug quando sales_category é null por min_confidence.
+     */
+    sales_category_best_score?: number;
+    /**
+     * Scores de todas as categorias (debug/diagnóstico).
+     */
+    sales_category_scores?: Record<string, number>;
+    /**
+     * Top 3 categorias com scores (debug/diagnóstico).
+     */
+    sales_category_top_3?: Array<{ category: string; score: number }>;
+    /**
      * Agregação temporal de categorias baseada em janela de contexto.
      * 
      * Reduz ruído de frases isoladas calculando categoria dominante

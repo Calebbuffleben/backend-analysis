@@ -253,6 +253,80 @@ export class DetectClientIndecision {
         };
       }
 
+      const inferredIndecisionCategory = this.inferIndecisionCategoryFromScores(textAnalysis);
+      const indecisionMetrics = textAnalysis?.indecision_metrics;
+      const conditionalKeywords = textAnalysis?.conditional_keywords_detected ?? [];
+      const hasStrongMetrics =
+        (indecisionMetrics?.postponement_likelihood ?? 0) >= 0.6 ||
+        (indecisionMetrics?.conditional_language_score ?? 0) >= 0.5 ||
+        (indecisionMetrics?.indecision_score ?? 0) >= 0.6;
+      const hasConditionalKeywords = conditionalKeywords.length >= 1;
+      const bestScore = textAnalysis?.sales_category_best_score ?? 0;
+      const intensity = textAnalysis?.sales_category_intensity ?? 0;
+      const hasStrongIndecisionSignal =
+        inferredIndecisionCategory !== null &&
+        (bestScore >= 0.12 || intensity >= 0.25) &&
+        (hasStrongMetrics || hasConditionalKeywords);
+
+      if (hasStrongIndecisionSignal) {
+        this.logger.debug('✅ [INDECISION] Using inferred indecision signal (no category)', {
+          inferredIndecisionCategory,
+          bestScore: bestScore.toFixed(3),
+          intensity: intensity.toFixed(3),
+          hasStrongMetrics,
+          hasConditionalKeywords,
+          conditionalKeywordsCount: conditionalKeywords.length,
+        });
+
+        const confidence = Math.max(bestScore, intensity);
+        let representativePhrases = this.extractRepresentativePhrases(
+          state,
+          5,
+          5,
+          0.15,
+        );
+
+        if (representativePhrases.length === 0) {
+          const current = (evt.text || '').trim();
+          if (current) {
+            const maxLen = 180;
+            const snippet = current.length > maxLen ? `${current.slice(0, maxLen - 3)}...` : current;
+            representativePhrases = [snippet];
+          }
+        }
+
+        const window = this.window(state, now, 60000);
+        if (effectiveIndecisionCooldownMs > 0) {
+          this.setCooldown(
+            state,
+            'sales_client_indecision',
+            now,
+            effectiveIndecisionCooldownMs,
+          );
+        }
+
+        return {
+          id: this.makeId(),
+          type: 'sales_client_indecision',
+          severity: 'warning',
+          ts: now,
+          meetingId: evt.meetingId,
+          participantId: evt.participantId,
+          participantName: this.getParticipantName(evt.meetingId, evt.participantId) ?? undefined,
+          window: { start: window.start, end: window.end },
+          message: '⏳ Cliente demonstrando indecisão',
+          tips: ['Pergunte o que está travando', 'Proponha próximo passo concreto'],
+          metadata: {
+            confidence: Math.round(confidence * 100) / 100,
+            representative_phrases: representativePhrases,
+            sales_category: inferredIndecisionCategory ?? undefined,
+            sales_category_confidence: textAnalysis?.sales_category_confidence ?? undefined,
+            indecision_metrics: textAnalysis?.indecision_metrics ?? undefined,
+            conditional_keywords_detected: textAnalysis?.conditional_keywords_detected ?? undefined,
+          },
+        };
+      }
+
       // PRIORIDADE 1: Log detalhado quando indecisão ativa não é detectada (usando intensity)
       this.logger.debug('❌ [INDECISION] No active indecision detected', {
         signalsCount: activeIndecision?.signalsCount ?? 0,
@@ -272,6 +346,9 @@ export class DetectClientIndecision {
         currentSalesCategory: textAnalysis?.sales_category ?? null,
         currentSalesCategoryIntensity: textAnalysis?.sales_category_intensity?.toFixed(3) ?? null,
         currentSalesCategoryConfidence: textAnalysis?.sales_category_confidence?.toFixed(3) ?? null,
+        inferredIndecisionCategory,
+        bestScore: bestScore.toFixed(3),
+        intensity: intensity.toFixed(3),
         note: 'PRIORIDADE 1: Validation uses average INTENSITY, not confidence',
       });
       return null;
@@ -1098,6 +1175,39 @@ export class DetectClientIndecision {
       }
       return (entry.sales_category_intensity ?? 0) >= minIntensity;
     });
+  }
+
+  private inferIndecisionCategoryFromScores(
+    textAnalysis?: ParticipantState['textAnalysis'],
+  ): string | null {
+    if (!textAnalysis) {
+      return null;
+    }
+
+    const indecisionCategories = new Set(['stalling', 'objection_soft']);
+    const top3 = textAnalysis.sales_category_top_3 ?? [];
+    const bestScore = textAnalysis.sales_category_best_score ?? 0;
+
+    if (top3.length === 0) {
+      return null;
+    }
+
+    const best = top3[0];
+    if (best && indecisionCategories.has(best.category)) {
+      return best.category;
+    }
+
+    const bestIndecision = top3.find((entry) => indecisionCategories.has(entry.category));
+    if (!bestIndecision) {
+      return null;
+    }
+
+    const scoreGap = bestScore - bestIndecision.score;
+    if (bestIndecision.score >= 0.12 && scoreGap <= 0.05) {
+      return bestIndecision.category;
+    }
+
+    return null;
   }
 
   private calculateTemporalConsistency(
