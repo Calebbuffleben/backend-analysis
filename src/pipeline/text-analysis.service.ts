@@ -201,6 +201,30 @@ export interface TextAnalysisResult {
   confidence: number;
 }
 
+export interface AudioChunkPayload {
+  meetingId: string;
+  participantId: string;
+  track: string;
+  audioData: string; // base64 WAV
+  sampleRate: number;
+  channels: number;
+  /**
+   * Timestamp of capture/window (ms since epoch), ideally from the audio grouping layer.
+   * This is NOT necessarily the server send time.
+   */
+  timestamp: number;
+  /**
+   * Backend-side timestamp when the chunk was enqueued/sent (ms since epoch).
+   * Useful to split queueing latency vs execution latency.
+   */
+  serverSendTs?: number;
+  language?: string;
+  /**
+   * Optional sequence number per (meetingId, participantId, track).
+   */
+  seq?: number;
+}
+
 @Injectable()
 export class TextAnalysisService implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly logger = new Logger(TextAnalysisService.name);
@@ -464,6 +488,7 @@ export class TextAnalysisService implements OnApplicationBootstrap, OnApplicatio
     channels: number,
     timestamp?: number,
     language?: string,
+    seq?: number,
   ): Promise<void> {
     /**
      * Envia chunk de áudio WAV para transcrição no serviço Python.
@@ -503,8 +528,10 @@ export class TextAnalysisService implements OnApplicationBootstrap, OnApplicatio
         sampleRate,
         channels,
         timestamp: timestamp ?? Date.now(),
+        serverSendTs: Date.now(),
         language: language ?? 'pt',
-      };
+        seq,
+      } satisfies AudioChunkPayload;
 
       this.logger.debug(
         `[DIAGNOSTIC] About to emit audio_chunk event. Socket connected: ${this.socket?.connected}, Socket exists: ${!!this.socket}`,

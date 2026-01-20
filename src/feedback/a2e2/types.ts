@@ -24,7 +24,16 @@ export type Sample = {
  */
 export interface TextHistoryEntry {
   text: string;
+  /**
+   * Capture/conversation timestamp (ms since epoch). This represents when the
+   * audio/text occurred, not when it was processed.
+   */
   timestamp: number;
+  /**
+   * Backend receive timestamp (ms since epoch). Used to monitor backlog/staleness
+   * without breaking windowed business rules based on capture time.
+   */
+  received_at?: number;
   sales_category?: string | null;
   sales_category_confidence?: number | null;
   sales_category_intensity?: number | null;

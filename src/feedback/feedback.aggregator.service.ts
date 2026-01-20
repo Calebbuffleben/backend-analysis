@@ -572,6 +572,7 @@ export class FeedbackAggregatorService {
     const historyEntry: TextHistoryEntry = {
       text: evt.text,
       timestamp: evt.timestamp,
+      received_at: Date.now(),
       sales_category: evt.analysis.sales_category ?? null,
       sales_category_confidence: evt.analysis.sales_category_confidence ?? null,
       sales_category_intensity: evt.analysis.sales_category_intensity ?? null,

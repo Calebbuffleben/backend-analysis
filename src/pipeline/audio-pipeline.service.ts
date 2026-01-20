@@ -3,6 +3,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { HumeStreamService } from './hume-stream.service';
 import { TextAnalysisService } from './text-analysis.service';
+import { DeepQueueService } from './deep-queue.service';
 
 export type AudioChunkMeta = {
   meetingId: string;
@@ -18,6 +19,8 @@ type BufferState = {
   bytesAccumulated: number;
   thresholdBytes: number;
   lastFlushAt: number;
+  firstChunkAt: number;
+  seq: number;
 };
 
 @Injectable()
@@ -31,6 +34,7 @@ export class AudioPipelineService {
   constructor(
     private readonly hume: HumeStreamService,
     private readonly textAnalysis: TextAnalysisService,
+    private readonly deepQueue: DeepQueueService,
   ) {
     const seconds = Number(process.env.AUDIO_PIPELINE_GROUP_SECONDS || '2');
     this.defaultGroupSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 2;
@@ -56,12 +60,17 @@ export class AudioPipelineService {
         bytesAccumulated: 0,
         thresholdBytes,
         lastFlushAt: Date.now(),
+        firstChunkAt: Date.now(),
+        seq: 0,
       };
       this.keyToState.set(key, state);
     }
 
     state.buffers.push(data);
     state.bytesAccumulated += data.length;
+    if (state.buffers.length === 1) {
+      state.firstChunkAt = Date.now();
+    }
 
     const timeSinceLastFlush = Date.now() - state.lastFlushAt;
     const timeTriggerMs = Math.max(
@@ -91,8 +100,12 @@ export class AudioPipelineService {
     state.buffers = [];
     state.bytesAccumulated = 0;
     state.lastFlushAt = Date.now();
+    state.seq += 1;
 
-    this.dispatchToHume(meta, payload).catch((err) => {
+    const captureTs = state.lastFlushAt; // coarse; will be refined to end-of-window timestamp
+    const seq = state.seq;
+
+    this.dispatchToHume(meta, payload, captureTs, seq).catch((err) => {
       this.logger.error(
         `Dispatch error for ${key}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -108,13 +121,25 @@ export class AudioPipelineService {
     return `${meta.meetingId}:${meta.participant}:${meta.track}`;
   }
 
-  private async dispatchToHume(meta: AudioChunkMeta, pcm: Buffer): Promise<void> {
+  private async dispatchToHume(meta: AudioChunkMeta, pcm: Buffer, captureTs: number, seq: number): Promise<void> {
     // P1.1: Normalização RMS habilitada por padrão para melhorar qualidade de transcrição
     // Reduz alucinações em áudio com baixo volume
     const normalize = (process.env.AUDIO_PIPELINE_NORMALIZE || 'true') === 'true';
     const payloadFormat = (process.env.AUDIO_PIPELINE_PAYLOAD || 'wav').toLowerCase(); // prefer wav for WS
     // 1) optional normalization
     let processedPcm = normalize ? this.normalizeVolume(pcm) : pcm;
+
+    // Fast audio signal (local, lightweight): compute coarse RMS dBFS for stateful, windowed decisions.
+    // This must never block on Whisper/SBERT.
+    const rmsDbfs = this.computeRmsDbfs(processedPcm);
+    const isSpeechLikely = rmsDbfs > -45; // coarse threshold; tuned via logs/metrics later
+    this.logger.debug(`[FAST_AUDIO] ${meta.meetingId}/${meta.participant}/${meta.track}`, {
+      rmsDbfs: Number.isFinite(rmsDbfs) ? Math.round(rmsDbfs * 10) / 10 : null,
+      isSpeechLikely,
+      tsCaptureMs: captureTs,
+      seq,
+    });
+
     // 2) convert to mono if needed
     if (meta.channels !== this.humeTargetChannels) {
       processedPcm = this.toMono(processedPcm, meta.channels);
@@ -140,7 +165,8 @@ export class AudioPipelineService {
       wavBody,
     );
     
-    // Enviar áudio para transcrição (se habilitado)
+    // Deep path: enqueue to Redis stream (preferred), or fallback to Socket.IO → Python.
+    const deepQueueEnabled = this.deepQueue.isEnabled();
     const transcriptionEnabled = (process.env.AUDIO_TRANSCRIPTION_ENABLED || 'true') === 'true';
     const isTextAnalysisAvailable = true; // Sempre disponível agora (não é mais @Optional)
     const isTextAnalysisConnected = this.textAnalysis.isConnected();
@@ -150,6 +176,21 @@ export class AudioPipelineService {
       `Audio transcription check: enabled=${transcriptionEnabled}, serviceAvailable=${isTextAnalysisAvailable}, connected=${isTextAnalysisConnected}, healthy=${isTextAnalysisHealthy}`,
     );
     
+    if (deepQueueEnabled) {
+      await this.deepQueue.enqueueAudio({
+        meetingId: meta.meetingId,
+        participantId: meta.participant,
+        track: meta.track,
+        wavBase64: wavBody.toString('base64'),
+        sampleRate: this.humeTargetSampleRate,
+        channels: this.humeTargetChannels,
+        tsCaptureMs: captureTs,
+        tsEnqueueMs: Date.now(),
+        seq,
+      });
+      return;
+    }
+
     if (transcriptionEnabled && isTextAnalysisAvailable && isTextAnalysisConnected && isTextAnalysisHealthy) {
       // Enviar de forma assíncrona para não bloquear o fluxo principal
       this.logger.debug(
@@ -163,8 +204,9 @@ export class AudioPipelineService {
           wavBody,
           this.humeTargetSampleRate,
           this.humeTargetChannels,
-          Date.now(),
+          captureTs,
           'pt', // Português por padrão
+          seq,
         )
         .catch((err) => {
           this.logger.warn(
@@ -217,6 +259,24 @@ export class AudioPipelineService {
     header.write('data', 36);
     header.writeUInt32LE(pcmS16le.length, 40);
     return Buffer.concat([header, pcmS16le], 44 + pcmS16le.length);
+  }
+
+  private computeRmsDbfs(pcmS16leMonoOrMulti: Buffer): number {
+    if (pcmS16leMonoOrMulti.length < 2) return Number.NEGATIVE_INFINITY;
+    const view = new DataView(
+      pcmS16leMonoOrMulti.buffer,
+      pcmS16leMonoOrMulti.byteOffset,
+      pcmS16leMonoOrMulti.byteLength,
+    );
+    const samples = Math.floor(pcmS16leMonoOrMulti.byteLength / 2);
+    let sumSq = 0;
+    for (let i = 0; i < samples; i++) {
+      const s = view.getInt16(i * 2, true) / 32768;
+      sumSq += s * s;
+    }
+    const rms = Math.sqrt(sumSq / Math.max(1, samples));
+    if (rms <= 0) return Number.NEGATIVE_INFINITY;
+    return 20 * Math.log10(rms);
   }
 
   private toMono(pcmS16le: Buffer, channels: number): Buffer {
