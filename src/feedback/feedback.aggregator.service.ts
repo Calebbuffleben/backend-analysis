@@ -465,6 +465,24 @@ export class FeedbackAggregatorService {
 
   @OnEvent('text.analysis', { async: true })
   async handleTextAnalysis(evt: TextAnalysisResult): Promise<void> {
+    // Filtro rápido: descartar textos de UI/CTA do Google Meet para não poluir histórico nem detecção.
+    const textLower = (evt.text || '').toLowerCase();
+    const isMeetUiText =
+      textLower.includes('teste os recursos premium do google meet') ||
+      textLower.includes('voltando à tela inicial em 60 segundos') ||
+      textLower.includes('sua reunião está pronta') ||
+      textLower.includes('closefecharperson_add') ||
+      /\\d+\\s*(segundos?|minutos?)\\s*restantes?/i.test(textLower);
+
+    if (isMeetUiText) {
+      this.logger.debug('🧹 [TEXT_ANALYSIS] Ignoring Google Meet UI/CTA text', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        textPreview: evt.text.substring(0, 80),
+      });
+      return;
+    }
+
     // FASE 3: Log imediato para confirmar que handler está registrado e sendo executado
     this.logger.log('✅ [SANITY] handleTextAnalysis() called - handler is registered and working', {
       meetingId: evt.meetingId,
