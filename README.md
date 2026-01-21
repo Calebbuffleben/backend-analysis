@@ -25,6 +25,9 @@ src/
 ├── pipeline/
 │   ├── audio-pipeline.module.ts      # Wiring DI da pipeline
 │   ├── audio-pipeline.service.ts     # Bufferiza e agrupa áudio, gera WAV
+│   ├── deep-queue.service.ts         # Envia áudio para Redis Streams (Deep Queue)
+│   ├── deep-results-consumer.service.ts  # Consome resultados do Python via Redis
+│   ├── text-analysis.service.ts      # Integração Socket.IO com Python (fallback)
 │   └── hume-stream.service.ts        # Integração em tempo real com Hume (WS)
 ├── prisma/
 │   ├── prisma.module.ts
@@ -218,13 +221,16 @@ Este backend expõe endpoints WebSocket para receber Egress de Áudio e Vídeo d
 **Fluxo de processamento:**
 
 1. **Recepção**: WebSocket recebe chunks PCM (s16le) em tempo real
-2. **Buffer**: Pipeline interna agrupa chunks em memória (padrão: 2 segundos)
+2. **Buffer**: Pipeline interna agrupa chunks em memória (padrão: 5 segundos - otimizado para Whisper)
 3. **Flush**: Quando atinge threshold (tempo ou tamanho), o bloco é disparado
 4. **Processamento**: Normalização de volume opcional antes do envio
 5. **Formato**: Geração de header WAV (PCM s16le) para o bloco agregado
 6. **Streaming + Arquivo**:
    - **Streaming**: o chunk é enviado via WebSocket para o Hume (prosódia) quando as credenciais estão configuradas
    - **Arquivo**: o mesmo chunk é persistido no diretório de saída de áudio (`<meetingId>/`)
+7. **Text Analysis**:
+   - **Direct Path** (`DEEP_QUEUE_ENABLED=false`): Envia via Socket.IO diretamente para Python
+   - **Deep Queue Path** (`DEEP_QUEUE_ENABLED=true`): Enfileira no Redis Stream (`deep:audio_jobs`) via `DeepQueueService`
 
 **Logs de pipeline:**
 - Arquivos de log em `storage/pipeline-logs/<meetingId>.log`
@@ -404,6 +410,42 @@ webhook:
 - `GET /` - Status da API
 - `GET /health` - Health check
 - `POST /livekit/webhook` - Webhook do LiveKit para gerenciamento de sessões
+
+## Deep Queue Architecture (Redis Streams)
+
+When `DEEP_QUEUE_ENABLED=true`, the system uses Redis Streams for scalable audio processing:
+
+### Architecture Flow
+
+1. **Audio Ingestion**: `AudioPipelineService` → `DeepQueueService` → Redis Stream (`deep:audio_jobs`)
+2. **Python Processing**: Python service consumes from Redis Stream with backpressure
+3. **Result Publishing**: Python publishes results to Redis Stream (`deep:text_results`)
+4. **Backend Consumption**: `DeepResultsConsumerService` reads from Redis and emits `text.analysis` events
+
+### Configuration
+
+```bash
+# Enable Deep Queue
+DEEP_QUEUE_ENABLED=true
+DEEP_REDIS_URL=redis://default:password@redis-host:6379
+
+# Stream keys (optional, defaults shown)
+DEEP_AUDIO_STREAM_KEY=deep:audio_jobs
+DEEP_RESULTS_STREAM_KEY=deep:text_results
+DEEP_RESULTS_CONSUMER_GROUP=deep_results_backend
+```
+
+### Benefits
+
+- **Scalability**: Decouples audio ingestion from processing
+- **Reliability**: Redis Streams provide persistence and consumer groups
+- **Backpressure**: Coalescing ensures only latest chunks are processed
+- **Horizontal Scaling**: Multiple Python workers can consume from same stream
+
+### Services
+
+- **`DeepQueueService`**: Enqueues audio chunks to Redis Stream
+- **`DeepResultsConsumerService`**: Consumes analysis results from Redis Stream
 
 ## Estrutura de Armazenamento
 
