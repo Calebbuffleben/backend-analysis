@@ -61,7 +61,7 @@ export class DeepResultsConsumerService implements OnApplicationBootstrap, OnApp
 
     while (this.running) {
       try {
-        const res = await this.redis.xreadgroup(
+        const res = (await this.redis.xreadgroup(
           'GROUP',
           this.group,
           this.consumer,
@@ -72,10 +72,12 @@ export class DeepResultsConsumerService implements OnApplicationBootstrap, OnApp
           'STREAMS',
           this.streamKey,
           '>',
-        );
+        )) as unknown;
 
-        if (!res || res.length === 0) continue;
-        const [, entries] = res[0] as [string, Array<[string, Array<string>]>];
+        if (!Array.isArray(res) || res.length === 0) continue;
+        const firstStream = res[0];
+        if (!Array.isArray(firstStream) || firstStream.length < 2) continue;
+        const entries = firstStream[1] as Array<[string, Array<string>]>;
         if (!entries || entries.length === 0) continue;
 
         const [id, kv] = entries[0];
