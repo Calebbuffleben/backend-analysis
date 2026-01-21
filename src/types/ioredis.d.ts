@@ -8,6 +8,7 @@ declare module 'ioredis' {
     xreadgroup(...args: unknown[]): Promise<unknown>;
     xack(...args: unknown[]): Promise<unknown>;
     disconnect(): void;
+    on(event: string, listener: (err: Error) => void): this;
   }
 }
 

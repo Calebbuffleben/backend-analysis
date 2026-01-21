@@ -272,6 +272,21 @@ export class TextAnalysisService implements OnApplicationBootstrap, OnApplicatio
     this.logger.log(`[CONNECTION] Target URL: ${this.pythonServiceUrl}`);
     this.logger.log(`[CONNECTION] Environment variable TEXT_ANALYSIS_SERVICE_URL: ${process.env.TEXT_ANALYSIS_SERVICE_URL || 'NOT SET'}`);
     this.logger.log(`[LIFECYCLE] All modules initialized, handlers @OnEvent registered - safe to connect and emit events`);
+    
+    // When deep queue is enabled, backend uses Redis streams for both audio ingestion and result consumption.
+    // Socket.IO connection is not needed and would create duplicate result processing.
+    const queueEnabled = (process.env.DEEP_QUEUE_ENABLED || 'false') === 'true';
+    if (queueEnabled) {
+      this.logger.log(
+        '⏭️ [CONNECTION] Deep queue enabled, skipping Socket.IO connection to Python service',
+        {
+          note: 'Audio will be sent via Redis streams, results consumed via DeepResultsConsumerService',
+          DEEP_QUEUE_ENABLED: process.env.DEEP_QUEUE_ENABLED,
+        },
+      );
+      return;
+    }
+    
     await this.connect();
   }
 

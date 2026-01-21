@@ -26,7 +26,10 @@ export class DeepResultsConsumerService implements OnApplicationBootstrap, OnApp
 
   async onApplicationBootstrap(): Promise<void> {
     if (!this.isEnabled()) {
-      this.logger.log('Deep results consumer disabled.');
+      this.logger.log('Deep results consumer disabled.', {
+        DEEP_QUEUE_ENABLED: process.env.DEEP_QUEUE_ENABLED,
+        DEEP_REDIS_URL_configured: !!(process.env.DEEP_REDIS_URL || process.env.REDIS_URL),
+      });
       return;
     }
 
@@ -34,18 +37,32 @@ export class DeepResultsConsumerService implements OnApplicationBootstrap, OnApp
     this.redis = new Redis(url, { maxRetriesPerRequest: 2, enableReadyCheck: true, lazyConnect: true });
     this.running = true;
 
+    // Add error handler to prevent unhandled error events
+    this.redis.on('error', (err) => {
+      this.logger.error(`Redis connection error: ${err.message}`);
+    });
+
     try {
       // Create group best-effort
       await this.redis.xgroup('CREATE', this.streamKey, this.group, '0-0', 'MKSTREAM');
+      this.logger.debug(`Created consumer group ${this.group} for stream ${this.streamKey}`);
     } catch {
       // group likely exists
+      this.logger.debug(`Consumer group ${this.group} already exists for stream ${this.streamKey}`);
     }
 
     this.loop().catch((e) => {
-      this.logger.error(`Deep results consumer loop crashed: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.error(`Deep results consumer loop crashed: ${e instanceof Error ? e.message : String(e)}`, {
+        error: e instanceof Error ? e.stack : undefined,
+      });
     });
 
-    this.logger.log(`Deep results consumer started (stream=${this.streamKey} group=${this.group} consumer=${this.consumer})`);
+    this.logger.log(`✅ Deep results consumer started`, {
+      stream: this.streamKey,
+      group: this.group,
+      consumer: this.consumer,
+      redis_url_configured: !!url,
+    });
   }
 
   onApplicationShutdown(): void {
@@ -89,12 +106,20 @@ export class DeepResultsConsumerService implements OnApplicationBootstrap, OnApp
         const json = obj['json'];
         if (json) {
           const parsed = JSON.parse(json) as TextAnalysisResult;
+          this.logger.debug(`Received result from Redis stream`, {
+            meetingId: parsed.meetingId,
+            participantId: parsed.participantId,
+            sales_category: parsed.analysis.sales_category,
+          });
           this.emitter.emit('text.analysis', parsed);
+          this.logger.debug(`Emitted text.analysis event from Redis result`);
         }
 
         await this.redis.xack(this.streamKey, this.group, id);
       } catch (e) {
-        this.logger.warn(`Deep results consumer error: ${e instanceof Error ? e.message : String(e)}`);
+        this.logger.warn(`Deep results consumer error: ${e instanceof Error ? e.message : String(e)}`, {
+          error: e instanceof Error ? e.stack : undefined,
+        });
       }
     }
   }
