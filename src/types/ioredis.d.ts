@@ -4,6 +4,10 @@ declare module 'ioredis' {
   export default class Redis {
     constructor(url: string, opts?: Record<string, unknown>);
     xadd(...args: unknown[]): Promise<unknown>;
+    xgroup(...args: unknown[]): Promise<unknown>;
+    xreadgroup(...args: unknown[]): Promise<unknown>;
+    xack(...args: unknown[]): Promise<unknown>;
+    disconnect(): void;
   }
 }
 
