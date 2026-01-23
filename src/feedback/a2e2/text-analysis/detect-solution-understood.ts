@@ -11,37 +11,20 @@ type MeetingMaps = {
   participantToName: Map<string, string>;
 };
 
-type SolutionContextEntry = {
-  ts: number;
-  participantId: string;
-  role: 'host' | 'guest' | 'unknown';
-  text: string;
-  embedding: number[];
-  keywords: string[];
-  strength: number; // 0..1
-};
-
 export class DetectSolutionUnderstood {
   private readonly logger = new Logger(DetectSolutionUnderstood.name);
   private readonly byMeeting = new Map<string, MeetingMaps>();
 
-  // Meeting-level "solution context" (host explanation turns) for reformulation detection
-  private readonly solutionContextByMeeting = new Map<string, SolutionContextEntry[]>();
-
   /**
    * API pública no padrão A2E2: (state, ctx) -> FeedbackEventPayload | null
    *
-   * O "solution context" verdadeiro é mantido no Aggregator e exposto via DetectionContext.
-   * Aqui apenas fazemos um snapshot para a detecção atual (sem precisar de singleton).
+   * Busca dinamicamente o textHistory dos hosts no momento da detecção,
+   * sem precisar de estado adicional.
    */
   run(state: ParticipantState, ctx: DetectionContext): FeedbackEventPayload | null {
     const meetingId = ctx.meetingId;
     const participantId = ctx.participantId;
     const now = ctx.now;
-
-    // Snapshot do contexto de solução (host explanations) vindo do Aggregator.
-    const solutionContext = ctx.getSolutionContextEntries?.(meetingId) ?? [];
-    this.solutionContextByMeeting.set(meetingId, solutionContext as unknown as SolutionContextEntry[]);
 
     // Snapshot de nome/role do participante atual (usado para ignorar host e preencher payload).
     const participantName = ctx.getParticipantName(meetingId, participantId);
@@ -72,7 +55,7 @@ export class DetectSolutionUnderstood {
       },
     } as unknown as TextAnalysisResult;
 
-    const feedback = this.detectClientSolutionUnderstood(state, evt, now);
+    const feedback = this.detectClientSolutionUnderstood(state, evt, now, ctx);
     if (feedback && !feedback.participantName && participantName) {
       feedback.participantName = participantName;
     }
@@ -83,6 +66,7 @@ export class DetectSolutionUnderstood {
     state: ParticipantState,
     evt: TextAnalysisResult,
     now: number,
+    ctx: DetectionContext,
   ): FeedbackEventPayload | null {
     const enabled = this.envBool('SALES_SOLUTION_UNDERSTOOD_ENABLED', false);
     if (!enabled) return null;
@@ -149,22 +133,20 @@ export class DetectSolutionUnderstood {
       return null;
     }
 
-    const contextEntries = this.getSolutionContextEntriesForDetection(evt.meetingId, evt.participantId, now);
+    const contextEntries = this.getHostTextHistoryForComparison(evt.meetingId, evt.participantId, now, ctx);
     if (contextEntries.length === 0) {
       if (debug) {
-        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No solution context available', {
+        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No host text history available', {
           meetingId: evt.meetingId,
           participantId: evt.participantId,
-          totalContextEntries: this.solutionContextByMeeting.get(evt.meetingId)?.length ?? 0,
         });
       }
       return null;
     }
     if (debug) {
-      this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Context available', {
-        contextEntriesCount: contextEntries.length,
-        contextRoles: contextEntries.map((e) => e.role),
-        contextStrengths: contextEntries.map((e) => Math.round(e.strength * 100) / 100),
+      this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Host context available', {
+        entriesCount: contextEntries.length,
+        hosts: [...new Set(contextEntries.map(e => e.participantId))],
       });
     }
 
@@ -192,10 +174,9 @@ export class DetectSolutionUnderstood {
     }
     const similarityScore = this.clamp01((similarityRaw - 0.55) / 0.25);
     const markerScore = this.clamp01(markers.length / 2);
-    const contextStrength = contextEntries.reduce((acc, e) => acc + e.strength, 0) / contextEntries.length;
 
     const clientKeywords = evt.analysis.keywords ?? [];
-    const contextKeywords = this.collectKeywords(contextEntries);
+    const contextKeywords = this.collectKeywordsFromEntries(contextEntries);
     const keywordOverlap = this.keywordOverlapCount(clientKeywords, contextKeywords);
     const keywordOverlapScore = this.clamp01(keywordOverlap / 3);
     // Mitigação de falso positivo: se não há overlap nenhum, exigir similarity bem alta
@@ -217,11 +198,10 @@ export class DetectSolutionUnderstood {
           : 0.0;
 
     const confidence =
-      similarityScore * 0.45 +
-      markerScore * 0.20 +
+      similarityScore * 0.50 +
+      markerScore * 0.25 +
       keywordOverlapScore * 0.15 +
-      this.clamp01(contextStrength) * 0.15 +
-      speechActScore * 0.05;
+      speechActScore * 0.10;
 
     const thresholdRaw = process.env.SALES_SOLUTION_UNDERSTOOD_THRESHOLD;
     const thresholdParsed = thresholdRaw ? Number.parseFloat(thresholdRaw.replace(/"/g, '')) : 0.7;
@@ -244,9 +224,9 @@ export class DetectSolutionUnderstood {
     }
 
     const window = this.window(state, now, 60000);
-    const bestContext = contextEntries.reduce((best, cur) => (cur.strength > best.strength ? cur : best), contextEntries[0]);
+    const bestContext = contextEntries.length > 0 ? contextEntries[contextEntries.length - 1] : null;
 
-    const contextExcerpt = this.snippet(bestContext.text, 180);
+    const contextExcerpt = bestContext ? this.snippet(bestContext.text, 180) : '';
     const clientExcerpt = this.snippet(text, 180);
 
     if (debug) {
@@ -319,21 +299,63 @@ export class DetectSolutionUnderstood {
     return typeof until === 'number' && until > now;
   }
 
-  private getSolutionContextEntriesForDetection(
+  /**
+   * Busca textHistory recente de todos os hosts do meeting para comparação semântica.
+   * 
+   * Reutiliza textHistory já mantido em ParticipantState, sem precisar de estado adicional.
+   */
+  private getHostTextHistoryForComparison(
     meetingId: string,
     currentParticipantId: string,
     now: number,
-  ): SolutionContextEntry[] {
+    ctx: DetectionContext,
+  ): Array<{ participantId: string; text: string; embedding: number[]; keywords: string[]; ts: number }> {
     const windowMsRaw = process.env.SALES_SOLUTION_CONTEXT_WINDOW_MS;
     const windowMsParsed = windowMsRaw ? Number.parseInt(windowMsRaw.replace(/"/g, ''), 10) : 90_000;
     const windowMs = Number.isFinite(windowMsParsed) ? Math.max(10_000, windowMsParsed) : 90_000;
     const cutoff = now - windowMs;
 
-    const list = this.solutionContextByMeeting.get(meetingId) ?? [];
-    return list
-      .filter((e) => e.ts >= cutoff)
-      .filter((e) => e.participantId !== currentParticipantId)
-      .filter((e) => e.role === 'host' || e.role === 'unknown');
+    const result: Array<{ participantId: string; text: string; embedding: number[]; keywords: string[]; ts: number }> = [];
+
+    if (!ctx.getParticipantsForMeeting) {
+      this.logger.warn('[SOLUTION_UNDERSTOOD] getParticipantsForMeeting not available in DetectionContext');
+      return result;
+    }
+
+    const participants = ctx.getParticipantsForMeeting(meetingId);
+
+    for (const [participantId, state] of participants) {
+      // Não incluir o participante atual
+      if (participantId === currentParticipantId) continue;
+
+      // Apenas hosts
+      const role = ctx.getParticipantRole?.(meetingId, participantId);
+      if (role !== 'host') continue;
+
+      // Extrair textHistory recente
+      const textHistory = state.textAnalysis?.textHistory ?? [];
+      for (const entry of textHistory) {
+        // Filtrar por janela temporal
+        if (entry.timestamp < cutoff) continue;
+
+        const text = entry.text?.trim();
+        const embedding = entry.embedding;
+        const keywords = entry.keywords ?? [];
+
+        // Ignorar entries sem texto ou embedding
+        if (!text || !embedding || embedding.length === 0) continue;
+
+        result.push({
+          participantId,
+          text,
+          embedding,
+          keywords,
+          ts: entry.timestamp,
+        });
+      }
+    }
+
+    return result;
   }
 
   private meanEmbedding(vectors: number[][]): number[] | null {
@@ -378,7 +400,9 @@ export class DetectSolutionUnderstood {
     return x;
   }
 
-  private collectKeywords(entries: SolutionContextEntry[]): string[] {
+  private collectKeywordsFromEntries(
+    entries: Array<{ keywords: string[] }>,
+  ): string[] {
     const set = new Set<string>();
     for (const e of entries) {
       for (const k of e.keywords) {
