@@ -116,6 +116,18 @@ type ParticipantState = {
       conditional_language_signal?: boolean;
     } | null;
     /**
+     * Score absoluto da melhor categoria (0.0 a 1.0).
+     */
+    sales_category_best_score?: number;
+    /**
+     * Scores de todas as categorias (debug/diagnóstico).
+     */
+    sales_category_scores?: Record<string, number>;
+    /**
+     * Top 3 categorias com scores (debug/diagnóstico).
+     */
+    sales_category_top_3?: Array<{ category: string; score: number }>;
+    /**
      * Agregação temporal de categorias baseada em janela de contexto.
      */
     sales_category_aggregated?: {
@@ -379,7 +391,11 @@ export class FeedbackAggregatorService {
   constructor(
     private readonly delivery: FeedbackDeliveryService,
     private readonly index: ParticipantIndexService,
-  ) {}
+  ) {
+    // FASE 2: Validação - confirmar que handlers @OnEvent estão sendo registrados
+    this.logger.log(`[EVENT_EMITTER] FeedbackAggregatorService initialized with @OnEvent handlers`);
+    this.logger.debug(`[EVENT_EMITTER] Service instance created, handlers will be registered by NestJS`);
+  }
 
   @OnEvent('feedback.ingestion', { async: true })
   handleIngestion(evt: FeedbackIngestionEvent): void {
@@ -448,7 +464,35 @@ export class FeedbackAggregatorService {
   }
 
   @OnEvent('text.analysis', { async: true })
-  handleTextAnalysis(evt: TextAnalysisResult): void {
+  async handleTextAnalysis(evt: TextAnalysisResult): Promise<void> {
+    // Filtro rápido: descartar textos de UI/CTA do Google Meet para não poluir histórico nem detecção.
+    const textLower = (evt.text || '').toLowerCase();
+    const isMeetUiText =
+      textLower.includes('teste os recursos premium do google meet') ||
+      textLower.includes('voltando à tela inicial em 60 segundos') ||
+      textLower.includes('sua reunião está pronta') ||
+      textLower.includes('closefecharperson_add') ||
+      /\\d+\\s*(segundos?|minutos?)\\s*restantes?/i.test(textLower);
+
+    if (isMeetUiText) {
+      this.logger.debug('🧹 [TEXT_ANALYSIS] Ignoring Google Meet UI/CTA text', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        textPreview: evt.text.substring(0, 80),
+      });
+      return;
+    }
+
+    // FASE 3: Log imediato para confirmar que handler está registrado e sendo executado
+    this.logger.log('✅ [SANITY] handleTextAnalysis() called - handler is registered and working', {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      textLength: evt.text?.length ?? 0,
+      textPreview: evt.text?.substring(0, 50) ?? 'null',
+      hasSalesCategory: !!evt.analysis?.sales_category,
+      salesCategory: evt.analysis?.sales_category ?? 'null',
+    });
+    
     const key = this.key(evt.meetingId, evt.participantId);
     let state = this.byKey.get(key);
 
@@ -546,11 +590,34 @@ export class FeedbackAggregatorService {
     const historyEntry: TextHistoryEntry = {
       text: evt.text,
       timestamp: evt.timestamp,
+      received_at: Date.now(),
       sales_category: evt.analysis.sales_category ?? null,
       sales_category_confidence: evt.analysis.sales_category_confidence ?? null,
       sales_category_intensity: evt.analysis.sales_category_intensity ?? null,
       sales_category_ambiguity: evt.analysis.sales_category_ambiguity ?? null,
     };
+    
+    // FASE 1: Log detalhado quando chunk é adicionado ao textHistory
+    if (historyEntry.sales_category) {
+      this.logger.debug('📝 [TEXT_HISTORY] Adding entry with sales_category to history', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        text_preview: historyEntry.text.substring(0, 50),
+        sales_category: historyEntry.sales_category,
+        sales_category_confidence: historyEntry.sales_category_confidence,
+        sales_category_intensity: historyEntry.sales_category_intensity,
+        sales_category_ambiguity: historyEntry.sales_category_ambiguity,
+        timestamp: historyEntry.timestamp,
+      });
+    } else {
+      this.logger.debug('📝 [TEXT_HISTORY] Adding entry WITHOUT sales_category to history', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        text_preview: historyEntry.text.substring(0, 50),
+        sales_category: null,
+        timestamp: historyEntry.timestamp,
+      });
+    }
     
     // Inicializar histórico se não existir
     const currentHistory = state.textAnalysis?.textHistory ?? [];
@@ -562,6 +629,56 @@ export class FeedbackAggregatorService {
     const prunedHistory = updatedHistory.length > maxHistorySize
       ? updatedHistory.slice(-maxHistorySize)
       : updatedHistory;
+    
+    // FASE 1: Log resumo do histórico após adição
+    const historyWithCategory = prunedHistory.filter(entry => entry.sales_category).length;
+    this.logger.debug('📝 [TEXT_HISTORY] History updated', {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      totalEntries: prunedHistory.length,
+      entriesWithCategory: historyWithCategory,
+      lastEntryCategory: prunedHistory[prunedHistory.length - 1]?.sales_category ?? null,
+      lastEntryConfidence: prunedHistory[prunedHistory.length - 1]?.sales_category_confidence ?? null,
+    });
+    
+    // FASE 2: Validação de integridade do textHistory
+    // Garantir que o chunk atual foi adicionado corretamente ao histórico
+    const lastEntry = prunedHistory[prunedHistory.length - 1];
+    const isCurrentChunkInHistory = lastEntry && 
+      lastEntry.text === evt.text && 
+      lastEntry.timestamp === evt.timestamp;
+    
+    if (!isCurrentChunkInHistory) {
+      this.logger.warn('⚠️ [TEXT_HISTORY] Current chunk not found in history!', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        expectedText: evt.text.substring(0, 50),
+        expectedTimestamp: evt.timestamp,
+        lastEntryText: lastEntry?.text?.substring(0, 50) ?? 'null',
+        lastEntryTimestamp: lastEntry?.timestamp ?? null,
+        historyLength: prunedHistory.length,
+      });
+    } else {
+      this.logger.debug('✅ [TEXT_HISTORY] Current chunk verified in history', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        historyLength: prunedHistory.length,
+        hasSalesCategory: !!lastEntry.sales_category,
+      });
+    }
+    
+    // FASE 2: Validação de sincronização - garantir que sales_category do chunk atual
+    // está consistente entre o evento e o histórico
+    if (lastEntry && lastEntry.sales_category !== (evt.analysis.sales_category ?? null)) {
+      this.logger.warn('⚠️ [TEXT_HISTORY] Sales category mismatch between event and history!', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        eventSalesCategory: evt.analysis.sales_category ?? null,
+        historySalesCategory: lastEntry.sales_category ?? null,
+        eventConfidence: evt.analysis.sales_category_confidence ?? null,
+        historyConfidence: lastEntry.sales_category_confidence ?? null,
+      });
+    }
     
     // ========================================================================
     // Atualizar estado com análise de texto e histórico
@@ -595,6 +712,9 @@ export class FeedbackAggregatorService {
       sales_category_intensity: evt.analysis.sales_category_intensity ?? undefined,
       sales_category_ambiguity: evt.analysis.sales_category_ambiguity ?? undefined,
       sales_category_flags: evt.analysis.sales_category_flags ?? undefined,
+      sales_category_best_score: evt.analysis.sales_category_best_score ?? undefined,
+      sales_category_scores: evt.analysis.sales_category_scores ?? undefined,
+      sales_category_top_3: evt.analysis.sales_category_top_3 ?? undefined,
       // Análises contextuais (baseadas em histórico)
       sales_category_aggregated: evt.analysis.sales_category_aggregated ?? undefined,
       sales_category_transition: evt.analysis.sales_category_transition ?? undefined,
@@ -2196,6 +2316,7 @@ export class FeedbackAggregatorService {
    * 
    * Verifica se o padrão de indecisão se mantém consistente ao longo de uma
    * janela temporal, analisando múltiplos fatores:
+   * - Sinais fortes suficientes na janela (>= 2 com intensidade >= 0.25) OU
    * - Proporção de textos de indecisão na janela (>= 70%)
    * - Estabilidade da categoria dominante (>= 0.5)
    * - Tendência estável (sem progresso ou regressão)
@@ -2203,11 +2324,12 @@ export class FeedbackAggregatorService {
    * @param state Estado do participante contendo histórico de textos
    * @param now Timestamp atual em milissegundos
    * @param windowMs Janela temporal em milissegundos (padrão: 60000 = 60s)
+   * @param allowWeakTrend Permite consistência mesmo sem tendência estável
    * @returns true se o padrão é consistente, false caso contrário
    * 
    * @example
    * ```typescript
-   * const isConsistent = this.calculateTemporalConsistency(state, now, 60000);
+   * const isConsistent = this.calculateTemporalConsistency(state, now, 60000, true);
    * if (isConsistent) {
    *   // Padrão se mantém consistente ao longo do tempo
    * }
@@ -2216,7 +2338,8 @@ export class FeedbackAggregatorService {
   private calculateTemporalConsistency(
     state: ParticipantState,
     now: number,
-    windowMs: number = 60000 // Últimos 60 segundos
+    windowMs: number = 60000, // Últimos 60 segundos
+    allowWeakTrend: boolean = false
   ): boolean {
     const textAnalysis = state.textAnalysis;
     if (!textAnalysis) {
@@ -2240,7 +2363,7 @@ export class FeedbackAggregatorService {
     }
     
     // ========================================================================
-    // Contar textos com categoria de indecisão e confiança mínima
+    // Contar textos com categoria de indecisão e intensidade mínima
     // ========================================================================
     const indecisionTexts = windowTexts.filter(entry => {
       // Verificar se tem categoria de indecisão
@@ -2248,13 +2371,24 @@ export class FeedbackAggregatorService {
         return false;
       }
       
-      // Verificar confiança mínima (>= 0.6)
-      if ((entry.sales_category_confidence ?? 0) < 0.6) {
+      // Verificar intensidade mínima (>= 0.25)
+      if ((entry.sales_category_intensity ?? 0) < 0.25) {
         return false;
       }
       
       return true;
     });
+
+    // ========================================================================
+    // Caminho permissivo: poucos sinais fortes em conversa longa
+    // ========================================================================
+    const indecisionCount = indecisionTexts.length;
+    const avgIntensity = indecisionCount > 0
+      ? indecisionTexts.reduce((sum, entry) => sum + (entry.sales_category_intensity ?? 0), 0) / indecisionCount
+      : 0;
+    if (indecisionCount >= 2 && avgIntensity >= 0.25) {
+      return true;
+    }
     
     // ========================================================================
     // Verificar proporção mínima (70% dos chunks devem ser de indecisão)
@@ -2283,7 +2417,37 @@ export class FeedbackAggregatorService {
     const trend = textAnalysis.sales_category_trend;
     const isStable = trend?.trend === 'stable';
     
-    return isStable;
+    if (isStable) {
+      return true;
+    }
+
+    // Se há sinal forte recente, não exigir tendência estável.
+    return allowWeakTrend;
+  }
+
+  private hasRecentStrongIndecisionSignal(
+    state: ParticipantState,
+    now: number,
+    windowMs: number = 30000,
+    minIntensity: number = 0.30,
+  ): boolean {
+    const textHistory = state.textAnalysis?.textHistory ?? [];
+    if (textHistory.length === 0) {
+      return false;
+    }
+
+    const cutoffTime = now - windowMs;
+    const indecisionCategories = ['stalling', 'objection_soft'];
+
+    return textHistory.some(entry => {
+      if (entry.timestamp < cutoffTime) {
+        return false;
+      }
+      if (!entry.sales_category || !indecisionCategories.includes(entry.sales_category)) {
+        return false;
+      }
+      return (entry.sales_category_intensity ?? 0) >= minIntensity;
+    });
   }
 
   // ========================================================================
@@ -2474,20 +2638,26 @@ export class FeedbackAggregatorService {
     }
     
     // ========================================================================
-    // Verificar volume mínimo de dados
+    // Verificar volume mínimo de dados (ajustável por sinal forte recente)
     // ========================================================================
-    // Requer pelo menos 5 chunks com categoria para análise confiável
+    // Requer pelo menos 5 chunks com categoria para análise confiável.
+    // Se houver sinal forte recente, reduzimos o mínimo para não bloquear
+    // indecisão em conversas longas com temas mistos.
     const aggregated = textAnalysis.sales_category_aggregated;
     const chunksCount = aggregated?.chunks_with_category ?? 0;
     const minChunksRaw = process.env.SALES_CLIENT_INDECISION_MIN_CHUNKS;
     const minChunksParsed = minChunksRaw ? Number.parseInt(minChunksRaw.replace(/"/g, ''), 10) : 5;
     const minChunks = Number.isFinite(minChunksParsed) ? Math.max(1, minChunksParsed) : 5;
-    const hasEnoughData = chunksCount >= minChunks;
+    const hasRecentStrongSignal = this.hasRecentStrongIndecisionSignal(state, now, 30000, 0.30);
+    const effectiveMinChunks = hasRecentStrongSignal ? Math.min(minChunks, 2) : minChunks;
+    const hasEnoughData = chunksCount >= effectiveMinChunks;
+    
     
     this.logger.debug('📊 [INDECISION] Data volume check', {
       chunksCount,
       hasEnoughData,
-      threshold: minChunks,
+      threshold: effectiveMinChunks,
+      hasRecentStrongSignal,
     });
     
     if (!hasEnoughData) {
@@ -2517,7 +2687,7 @@ export class FeedbackAggregatorService {
     // Calcular consistência temporal
     // ========================================================================
     // Verifica se o padrão se mantém consistente ao longo do tempo
-    const temporalConsistency = this.calculateTemporalConsistency(state, now, 60000);
+    const temporalConsistency = this.calculateTemporalConsistency(state, now, 60000, hasRecentStrongSignal);
     
     this.logger.debug('⏱️ [INDECISION] Temporal consistency', {
       temporalConsistency,

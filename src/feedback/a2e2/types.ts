@@ -24,7 +24,16 @@ export type Sample = {
  */
 export interface TextHistoryEntry {
   text: string;
+  /**
+   * Capture/conversation timestamp (ms since epoch). This represents when the
+   * audio/text occurred, not when it was processed.
+   */
   timestamp: number;
+  /**
+   * Backend receive timestamp (ms since epoch). Used to monitor backlog/staleness
+   * without breaking windowed business rules based on capture time.
+   */
+  received_at?: number;
   sales_category?: string | null;
   sales_category_confidence?: number | null;
   sales_category_intensity?: number | null;
@@ -137,6 +146,19 @@ export type ParticipantState = {
       // (Opcional) Teach-back/reformulação detectada no texto atual
       solution_reformulation_signal?: boolean;
     } | null;
+    /**
+     * Score absoluto da melhor categoria (0.0 a 1.0).
+     * Útil para debug quando sales_category é null por min_confidence.
+     */
+    sales_category_best_score?: number;
+    /**
+     * Scores de todas as categorias (debug/diagnóstico).
+     */
+    sales_category_scores?: Record<string, number>;
+    /**
+     * Top 3 categorias com scores (debug/diagnóstico).
+     */
+    sales_category_top_3?: Array<{ category: string; score: number }>;
     /**
      * Agregação temporal de categorias baseada em janela de contexto.
      */

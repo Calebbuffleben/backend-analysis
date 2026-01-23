@@ -106,10 +106,19 @@ export interface FeedbackEventPayload {
      */
     valid_signals_count?: number;
     /**
+     * Número de sinais recentes na janela temporal (ex.: 60s) usados como fallback
+     * para conversas longas com temas mistos.
+     */
+    recent_signals_count?: number;
+    /**
      * Confiança média dos sinais válidos detectados.
      * Calculada como média das confianças dos chunks válidos na janela.
      */
     valid_signals_average_confidence?: number;
+    /**
+     * Intensidade média dos sinais recentes usados como fallback.
+     */
+    recent_average_intensity?: number;
     /**
      * Métricas semânticas de indecisão vindas do serviço Python (quando disponíveis).
      *

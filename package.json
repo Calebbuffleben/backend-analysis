@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "nest build",
+    "build": "pnpm prisma:generate && nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -40,7 +40,11 @@
     "rxjs": "^7.8.1",
     "socket.io": "^4.7.5",
     "socket.io-client": "^4.8.1",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "ioredis": "^5.4.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": []
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.0",
