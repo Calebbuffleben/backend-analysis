@@ -26,6 +26,8 @@ export class DetectSolutionUnderstood {
     const participantId = ctx.participantId;
     const now = ctx.now;
 
+    this.logger.log(`🟢 [SOLUTION_UNDERSTOOD] Detector called for ${meetingId}/${participantId}`);
+
     // Snapshot de nome/role do participante atual (usado para ignorar host e preencher payload).
     const participantName = ctx.getParticipantName(meetingId, participantId);
     const roleRaw = ctx.getParticipantRole?.(meetingId, participantId);
@@ -76,7 +78,7 @@ export class DetectSolutionUnderstood {
     const text = (evt.text || '').trim();
     const embedding = evt.analysis.embedding;
     if (!text || !Array.isArray(embedding) || embedding.length === 0) {
-      if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Missing text or embedding');
+      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] Missing text or embedding - text: ${!!text}, embedding: ${Array.isArray(embedding) ? embedding.length : 'not array'}`);
       return null;
     }
 
@@ -109,14 +111,11 @@ export class DetectSolutionUnderstood {
 
     const markers = this.detectReformulationMarkers(text);
     if (markers.length === 0) {
-      if (debug) {
-        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No reformulation markers', {
-          textPreview: text.slice(0, 100),
-          textLength: text.length,
-        });
-      }
+      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] No reformulation markers - text: "${text.slice(0, 100)}..."`);
       return null;
     }
+    this.logger.log(`✅ [SOLUTION_UNDERSTOOD] Reformulation markers found: ${markers.join(', ')}`);
+
     if (debug) {
       this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Reformulation markers found', {
         markers,
@@ -135,20 +134,11 @@ export class DetectSolutionUnderstood {
 
     const contextEntries = this.getHostTextHistoryForComparison(evt.meetingId, evt.participantId, now, ctx);
     if (contextEntries.length === 0) {
-      if (debug) {
-        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No host text history available', {
-          meetingId: evt.meetingId,
-          participantId: evt.participantId,
-        });
-      }
+      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] No host text history available for ${evt.meetingId}/${evt.participantId}`);
       return null;
     }
-    if (debug) {
-      this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Host context available', {
-        entriesCount: contextEntries.length,
-        hosts: [...new Set(contextEntries.map(e => e.participantId))],
-      });
-    }
+    this.logger.log(`✅ [SOLUTION_UNDERSTOOD] Host context available - ${contextEntries.length} entries from ${[...new Set(contextEntries.map(e => e.participantId))].join(', ')}`);
+
 
     const centroid = this.meanEmbedding(contextEntries.map((e) => e.embedding));
     if (!centroid) {
@@ -159,19 +149,11 @@ export class DetectSolutionUnderstood {
     const similarityRaw = this.cosineSimilarity(embedding, centroid);
     // Safety: se não parece relacionado, não adianta continuar
     if (similarityRaw < 0.6) {
-      if (debug) {
-        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Similarity too low', {
-          similarityRaw: Math.round(similarityRaw * 1000) / 1000,
-          minRequired: 0.6,
-        });
-      }
+      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] Similarity too low: ${(similarityRaw * 100).toFixed(1)}% (min: 60%)`);
       return null;
     }
-    if (debug) {
-      this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Similarity OK', {
-        similarityRaw: Math.round(similarityRaw * 1000) / 1000,
-      });
-    }
+    this.logger.log(`✅ [SOLUTION_UNDERSTOOD] Similarity OK: ${(similarityRaw * 100).toFixed(1)}%`);
+
     const similarityScore = this.clamp01((similarityRaw - 0.55) / 0.25);
     const markerScore = this.clamp01(markers.length / 2);
 
@@ -206,16 +188,11 @@ export class DetectSolutionUnderstood {
     const thresholdRaw = process.env.SALES_SOLUTION_UNDERSTOOD_THRESHOLD;
     const thresholdParsed = thresholdRaw ? Number.parseFloat(thresholdRaw.replace(/"/g, '')) : 0.7;
     const threshold = Number.isFinite(thresholdParsed) ? this.clamp01(thresholdParsed) : 0.7;
+    
+    this.logger.log(`📊 [SOLUTION_UNDERSTOOD] Confidence: ${(confidence * 100).toFixed(1)}% (threshold: ${(threshold * 100).toFixed(0)}%) - similarity: ${(similarityScore * 100).toFixed(1)}%, markers: ${(markerScore * 100).toFixed(1)}%, keywords: ${(keywordOverlapScore * 100).toFixed(1)}%, speech: ${(speechActScore * 100).toFixed(1)}%`);
+    
     if (confidence < threshold) {
-      if (debug)
-        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Confidence below threshold', {
-          confidence,
-          threshold,
-          similarityRaw,
-          keywordOverlap,
-          markers,
-          speechAct,
-        });
+      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] Confidence below threshold - ${(confidence * 100).toFixed(1)}% < ${(threshold * 100).toFixed(0)}%`);
       return null;
     }
 
@@ -229,17 +206,7 @@ export class DetectSolutionUnderstood {
     const contextExcerpt = bestContext ? this.snippet(bestContext.text, 180) : '';
     const clientExcerpt = this.snippet(text, 180);
 
-    if (debug) {
-      this.logger.log('✅ [SOLUTION_UNDERSTOOD] Triggered', {
-        meetingId: evt.meetingId,
-        participantId: evt.participantId,
-        confidence: Math.round(confidence * 100) / 100,
-        threshold,
-        similarityRaw: Math.round(similarityRaw * 1000) / 1000,
-        keywordOverlap,
-        markers,
-      });
-    }
+    this.logger.log(`🎯 [SOLUTION_UNDERSTOOD] ✅ FEEDBACK TRIGGERED - confidence: ${(confidence * 100).toFixed(1)}%, similarity: ${(similarityRaw * 100).toFixed(1)}%, markers: ${markers.join(', ')}`);
 
     return {
       id: this.makeId(),
