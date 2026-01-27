@@ -453,6 +453,8 @@ export class FeedbackAggregatorService {
 
   @OnEvent('text.analysis', { async: true })
   async handleTextAnalysis(evt: TextAnalysisResult): Promise<void> {
+    const t8_handler_start = Date.now();
+    
     // Filtro rápido: descartar textos de UI/CTA do Google Meet para não poluir histórico nem detecção.
     const textLower = (evt.text || '').toLowerCase();
     const isMeetUiText =
@@ -551,6 +553,31 @@ export class FeedbackAggregatorService {
     if (salesTextAnalysisFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
     }
+    
+    const t9_feedback_generated = Date.now();
+    
+    // Extrair t0 do timing (se disponível)
+    const timing = (evt as any).timing;
+    const t0_capture = timing?.t0_capture || evt.timestamp;
+    
+    this.logger.log(`[LATENCY] Feedback pipeline complete`, {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      timestamps: {
+        t0_capture,
+        t8_handler_start,
+        t9_complete: t9_feedback_generated,
+      },
+      latencies_ms: {
+        handler_processing: t9_feedback_generated - t8_handler_start,
+        end_to_end_total: t9_feedback_generated - t0_capture,
+      },
+      feedbacks_generated: {
+        a2e2: !!feedback,
+        sales: !!salesFeedback,
+        text_analysis: !!salesTextAnalysisFeedback,
+      },
+    });
   }
 
   private updateStateWithTextAnalysis(

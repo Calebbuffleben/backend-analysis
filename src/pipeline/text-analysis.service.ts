@@ -268,24 +268,31 @@ export class TextAnalysisService implements OnApplicationBootstrap, OnApplicatio
   }
 
   async onApplicationBootstrap() {
-    this.logger.log('🚀 TextAnalysisService onApplicationBootstrap called, attempting to connect...');
-    this.logger.log(`[CONNECTION] Target URL: ${this.pythonServiceUrl}`);
-    this.logger.log(`[CONNECTION] Environment variable TEXT_ANALYSIS_SERVICE_URL: ${process.env.TEXT_ANALYSIS_SERVICE_URL || 'NOT SET'}`);
-    this.logger.log(`[LIFECYCLE] All modules initialized, handlers @OnEvent registered - safe to connect and emit events`);
-    
-    // When deep queue is enabled, backend uses Redis streams for both audio ingestion and result consumption.
-    // Socket.IO connection is not needed and would create duplicate result processing.
     const queueEnabled = (process.env.DEEP_QUEUE_ENABLED || 'false') === 'true';
+    
     if (queueEnabled) {
       this.logger.log(
-        '⏭️ [CONNECTION] Deep queue enabled, skipping Socket.IO connection to Python service',
+        '✅ [MODE] Deep Queue enabled - using Redis Streams for audio processing',
         {
-          note: 'Audio will be sent via Redis streams, results consumed via DeepResultsConsumerService',
-          DEEP_QUEUE_ENABLED: process.env.DEEP_QUEUE_ENABLED,
+          mode: 'DEEP_QUEUE',
+          audio_stream: process.env.DEEP_AUDIO_STREAM_KEY || 'deep:audio_jobs',
+          results_stream: process.env.DEEP_RESULTS_STREAM_KEY || 'deep:text_results',
+          socket_io_connection: 'NOT USED',
+          note: 'Backend will NOT connect to Python via Socket.IO. Communication is 100% via Redis.',
         },
       );
       return;
     }
+    
+    this.logger.log(
+      '✅ [MODE] Socket.IO mode - connecting directly to Python service',
+      {
+        mode: 'SOCKET_IO',
+        url: this.pythonServiceUrl,
+        note: 'Backend will establish Socket.IO connection for bidirectional communication',
+      }
+    );
+    this.logger.log(`[LIFECYCLE] All modules initialized, handlers @OnEvent registered - safe to connect and emit events`);
     
     await this.connect();
   }
