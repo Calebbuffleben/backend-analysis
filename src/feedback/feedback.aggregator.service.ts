@@ -2142,6 +2142,9 @@ export class FeedbackAggregatorService {
    * const phrases = this.extractRepresentativePhrases(state, now, 60000, 5, 0.6);
    * // Retorna até 5 frases de indecisão dos últimos 60 segundos
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision.extractRepresentativePhrases()
+   * in a2e2/text-analysis/detect-client-indecision.ts. Not called anywhere. Safe to remove.
    */
   private extractRepresentativePhrases(
     state: ParticipantState,
@@ -2209,6 +2212,9 @@ export class FeedbackAggregatorService {
    *   // Cliente está postergando decisões
    * }
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision.detectIndecisionPatterns()
+   * in a2e2/text-analysis/detect-client-indecision.ts. Not called anywhere. Safe to remove.
    */
   private detectIndecisionPatterns(
     state: ParticipantState
@@ -2343,6 +2349,9 @@ export class FeedbackAggregatorService {
    *   // Padrão se mantém consistente ao longo do tempo
    * }
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision.calculateTemporalConsistency()
+   * in a2e2/text-analysis/detect-client-indecision.ts. Not called anywhere. Safe to remove.
    */
   private calculateTemporalConsistency(
     state: ParticipantState,
@@ -2485,6 +2494,9 @@ export class FeedbackAggregatorService {
    * const confidence = this.calculateIndecisionConfidence(state, patterns, consistency);
    * // confidence será entre 0.0 e 1.0
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision.calculateIndecisionConfidence()
+   * in a2e2/text-analysis/detect-client-indecision.ts. Not called anywhere. Safe to remove.
    */
   private calculateIndecisionConfidence(
     state: ParticipantState,
@@ -2607,6 +2619,10 @@ export class FeedbackAggregatorService {
    *   this.delivery.publishToHosts(evt.meetingId, feedback);
    * }
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision class
+   * in a2e2/text-analysis/detect-client-indecision.ts, invoked via runTextAnalysisPipeline().
+   * Not called anywhere. Safe to remove.
    */
   private detectClientIndecision(
     state: ParticipantState,
@@ -2856,6 +2872,7 @@ export class FeedbackAggregatorService {
   // A implementação anterior neste arquivo foi removida para evitar duplicação
   // e usar a nova arquitetura baseada em textHistory.
 
+  /** @deprecated LEGACY — only used by the old inline detectClientIndecision. Not called anywhere. Safe to remove. */
   private snippet(text: string, maxLen: number): string {
     const t = (text || '').trim();
     if (!t) return '';
@@ -2863,6 +2880,7 @@ export class FeedbackAggregatorService {
     return `${t.slice(0, Math.max(0, maxLen - 3))}...`;
   }
 
+  /** @deprecated LEGACY — only used by the old inline detectClientIndecision. Not called anywhere. Safe to remove. */
   private envBool(key: string, defaultValue: boolean): boolean {
     const raw = process.env[key];
     if (raw === undefined || raw === null) return defaultValue;
