@@ -523,6 +523,19 @@ export class FeedbackAggregatorService {
 
     this.updateStateWithTextAnalysis(state, evt);
 
+    // Unified anti-spam: throttle ALL feedback generation across all three pipelines.
+    // State is already updated above so textHistory/analysis stay current.
+    const UNIFIED_MIN_GAP_MS = 5_000;
+    if (this.inGlobalCooldown(state, now, UNIFIED_MIN_GAP_MS)) {
+      this.logger.debug('⏱️ [THROTTLE] handleTextAnalysis skipped — unified 5s cooldown active', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        lastFeedbackAt: state.lastFeedbackAt,
+        now,
+      });
+      return;
+    }
+
     // Re-executar pipeline A2E2 com dados combinados
     const ctx = this.createDetectionContext(evt.meetingId, evt.participantId, now);
     const feedback = runA2E2Pipeline(state, ctx);
