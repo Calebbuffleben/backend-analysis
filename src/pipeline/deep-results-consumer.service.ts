@@ -57,11 +57,14 @@ export class DeepResultsConsumerService implements OnApplicationBootstrap, OnApp
       });
     });
 
-    this.logger.log(`✅ Deep results consumer started`, {
+    this.logger.log(`✅ [DEEP_QUEUE] Results consumer started and healthy`, {
+      mode: 'DEEP_QUEUE',
       stream: this.streamKey,
       group: this.group,
       consumer: this.consumer,
-      redis_url_configured: !!url,
+      redis_connected: true,
+      status: 'ACTIVE',
+      note: 'Consuming text analysis results from Redis Stream',
     });
   }
 
@@ -105,14 +108,37 @@ export class DeepResultsConsumerService implements OnApplicationBootstrap, OnApp
 
         const json = obj['json'];
         if (json) {
+          const t7_received = Date.now();
           const parsed = JSON.parse(json) as TextAnalysisResult;
-          this.logger.debug(`Received result from Redis stream`, {
+          
+          // Extrair timing do Python (se disponível)
+          const timing = (parsed as any).timing;
+          const t0_capture = timing?.t0_capture || parsed.timestamp;
+          const t5_complete = timing?.t5_processing_complete;
+          
+          this.logger.log(`[LATENCY] Result received from Redis`, {
             meetingId: parsed.meetingId,
             participantId: parsed.participantId,
+            timestamps: {
+              t0_capture,
+              t5_complete,
+              t7_received,
+            },
+            latencies_ms: {
+              python_processing: t5_complete ? (t5_complete - t0_capture) : 'unknown',
+              result_delivery: t5_complete ? (t7_received - t5_complete) : 'unknown',
+              end_to_end: t7_received - t0_capture,
+            },
             sales_category: parsed.analysis.sales_category,
           });
+          
           this.emitter.emit('text.analysis', parsed);
-          this.logger.debug(`Emitted text.analysis event from Redis result`);
+          
+          const t8_emitted = Date.now();
+          this.logger.debug(`[LATENCY] Event emitted`, {
+            meetingId: parsed.meetingId,
+            emit_duration_ms: t8_emitted - t7_received,
+          });
         }
 
         await this.redis.xack(this.streamKey, this.group, id);

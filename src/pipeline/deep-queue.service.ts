@@ -44,6 +44,8 @@ export class DeepQueueService {
   async enqueueAudio(job: DeepAudioJob): Promise<void> {
     if (!this.isEnabled() || !this.redis) return;
 
+    const t_before_xadd = Date.now();
+    
     try {
       await this.redis.xadd(
         this.streamKey,
@@ -67,6 +69,16 @@ export class DeepQueueService {
         'wavBase64',
         job.wavBase64,
       );
+      
+      const t_after_xadd = Date.now();
+      
+      this.logger.debug(`[LATENCY] Redis XADD timing`, {
+        meetingId: job.meetingId,
+        participantId: job.participantId,
+        seq: job.seq,
+        xadd_duration_ms: t_after_xadd - t_before_xadd,
+        age_since_capture_ms: t_after_xadd - job.tsCaptureMs,
+      });
     } catch (e) {
       this.logger.warn(`Failed to enqueue deep audio job: ${e instanceof Error ? e.message : String(e)}`);
     }

@@ -122,6 +122,8 @@ export class AudioPipelineService {
   }
 
   private async dispatchToHume(meta: AudioChunkMeta, pcm: Buffer, captureTs: number, seq: number): Promise<void> {
+    const t1_received = Date.now();
+    
     // P1.1: Normalização RMS habilitada por padrão para melhorar qualidade de transcrição
     // Reduz alucinações em áudio com baixo volume
     const normalize = (process.env.AUDIO_PIPELINE_NORMALIZE || 'true') === 'true';
@@ -168,13 +170,7 @@ export class AudioPipelineService {
     // Deep path: enqueue to Redis stream (preferred), or fallback to Socket.IO → Python.
     const deepQueueEnabled = this.deepQueue.isEnabled();
     const transcriptionEnabled = (process.env.AUDIO_TRANSCRIPTION_ENABLED || 'true') === 'true';
-    const isTextAnalysisAvailable = true; // Sempre disponível agora (não é mais @Optional)
-    const isTextAnalysisConnected = this.textAnalysis.isConnected();
-    const isTextAnalysisHealthy = this.textAnalysis.isHealthy();
-    
-    this.logger.debug(
-      `Audio transcription check: enabled=${transcriptionEnabled}, serviceAvailable=${isTextAnalysisAvailable}, connected=${isTextAnalysisConnected}, healthy=${isTextAnalysisHealthy}`,
-    );
+    const t2_ready_to_enqueue = Date.now();
     
     if (deepQueueEnabled) {
       await this.deepQueue.enqueueAudio({
@@ -188,8 +184,48 @@ export class AudioPipelineService {
         tsEnqueueMs: Date.now(),
         seq,
       });
+      
+      const t3_enqueued = Date.now();
+      
+      // Log de latência
+      this.logger.debug(`[LATENCY] Audio pipeline timing`, {
+        meetingId: meta.meetingId,
+        participantId: meta.participant,
+        seq,
+        timestamps: {
+          t0_capture: captureTs,
+          t1_received: t1_received,
+          t2_ready: t2_ready_to_enqueue,
+          t3_enqueued: t3_enqueued,
+        },
+        latencies_ms: {
+          capture_to_received: t1_received - captureTs,
+          received_to_ready: t2_ready_to_enqueue - t1_received,
+          ready_to_enqueued: t3_enqueued - t2_ready_to_enqueue,
+          total_backend: t3_enqueued - t1_received,
+        },
+      });
+      
       return;
     }
+
+    // Socket.IO path
+    const isTextAnalysisAvailable = true; // Sempre disponível agora (não é mais @Optional)
+    const isTextAnalysisConnected = this.textAnalysis.isConnected();
+    const isTextAnalysisHealthy = this.textAnalysis.isHealthy();
+    
+    this.logger.debug(
+      `[AUDIO_ROUTING] Using Socket.IO for transcription`,
+      {
+        enabled: transcriptionEnabled,
+        connected: isTextAnalysisConnected,
+        healthy: isTextAnalysisHealthy,
+        mode: 'SOCKET_IO',
+        note: isTextAnalysisConnected 
+          ? 'Direct connection to Python service' 
+          : 'Python service not connected - audio will be dropped',
+      }
+    );
 
     if (transcriptionEnabled && isTextAnalysisAvailable && isTextAnalysisConnected && isTextAnalysisHealthy) {
       // Enviar de forma assíncrona para não bloquear o fluxo principal

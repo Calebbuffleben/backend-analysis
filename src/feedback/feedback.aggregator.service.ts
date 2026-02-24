@@ -453,6 +453,8 @@ export class FeedbackAggregatorService {
 
   @OnEvent('text.analysis', { async: true })
   async handleTextAnalysis(evt: TextAnalysisResult): Promise<void> {
+    const t8_handler_start = Date.now();
+    
     // Filtro rápido: descartar textos de UI/CTA do Google Meet para não poluir histórico nem detecção.
     const textLower = (evt.text || '').toLowerCase();
     const isMeetUiText =
@@ -551,6 +553,31 @@ export class FeedbackAggregatorService {
     if (salesTextAnalysisFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
     }
+    
+    const t9_feedback_generated = Date.now();
+    
+    // Extrair t0 do timing (se disponível)
+    const timing = (evt as any).timing;
+    const t0_capture = timing?.t0_capture || evt.timestamp;
+    
+    this.logger.log(`[LATENCY] Feedback pipeline complete`, {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      timestamps: {
+        t0_capture,
+        t8_handler_start,
+        t9_complete: t9_feedback_generated,
+      },
+      latencies_ms: {
+        handler_processing: t9_feedback_generated - t8_handler_start,
+        end_to_end_total: t9_feedback_generated - t0_capture,
+      },
+      feedbacks_generated: {
+        a2e2: !!feedback,
+        sales: !!salesFeedback,
+        text_analysis: !!salesTextAnalysisFeedback,
+      },
+    });
   }
 
   private updateStateWithTextAnalysis(
@@ -2115,6 +2142,9 @@ export class FeedbackAggregatorService {
    * const phrases = this.extractRepresentativePhrases(state, now, 60000, 5, 0.6);
    * // Retorna até 5 frases de indecisão dos últimos 60 segundos
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision.extractRepresentativePhrases()
+   * in a2e2/text-analysis/detect-client-indecision.ts. Not called anywhere. Safe to remove.
    */
   private extractRepresentativePhrases(
     state: ParticipantState,
@@ -2182,6 +2212,9 @@ export class FeedbackAggregatorService {
    *   // Cliente está postergando decisões
    * }
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision.detectIndecisionPatterns()
+   * in a2e2/text-analysis/detect-client-indecision.ts. Not called anywhere. Safe to remove.
    */
   private detectIndecisionPatterns(
     state: ParticipantState
@@ -2316,6 +2349,9 @@ export class FeedbackAggregatorService {
    *   // Padrão se mantém consistente ao longo do tempo
    * }
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision.calculateTemporalConsistency()
+   * in a2e2/text-analysis/detect-client-indecision.ts. Not called anywhere. Safe to remove.
    */
   private calculateTemporalConsistency(
     state: ParticipantState,
@@ -2458,6 +2494,9 @@ export class FeedbackAggregatorService {
    * const confidence = this.calculateIndecisionConfidence(state, patterns, consistency);
    * // confidence será entre 0.0 e 1.0
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision.calculateIndecisionConfidence()
+   * in a2e2/text-analysis/detect-client-indecision.ts. Not called anywhere. Safe to remove.
    */
   private calculateIndecisionConfidence(
     state: ParticipantState,
@@ -2580,6 +2619,10 @@ export class FeedbackAggregatorService {
    *   this.delivery.publishToHosts(evt.meetingId, feedback);
    * }
    * ```
+   *
+   * @deprecated LEGACY — replaced by DetectClientIndecision class
+   * in a2e2/text-analysis/detect-client-indecision.ts, invoked via runTextAnalysisPipeline().
+   * Not called anywhere. Safe to remove.
    */
   private detectClientIndecision(
     state: ParticipantState,
@@ -2829,6 +2872,7 @@ export class FeedbackAggregatorService {
   // A implementação anterior neste arquivo foi removida para evitar duplicação
   // e usar a nova arquitetura baseada em textHistory.
 
+  /** @deprecated LEGACY — only used by the old inline detectClientIndecision. Not called anywhere. Safe to remove. */
   private snippet(text: string, maxLen: number): string {
     const t = (text || '').trim();
     if (!t) return '';
@@ -2836,6 +2880,7 @@ export class FeedbackAggregatorService {
     return `${t.slice(0, Math.max(0, maxLen - 3))}...`;
   }
 
+  /** @deprecated LEGACY — only used by the old inline detectClientIndecision. Not called anywhere. Safe to remove. */
   private envBool(key: string, defaultValue: boolean): boolean {
     const raw = process.env[key];
     if (raw === undefined || raw === null) return defaultValue;
@@ -2888,7 +2933,7 @@ export class FeedbackAggregatorService {
       return false;
     }
 
-    // Verificar cooldown global (30 segundos)
+    // Verificar cooldown global (2 segundos, padrão de inGlobalCooldown)
     if (this.inGlobalCooldown(state, now)) {
       return false;
     }
@@ -2959,7 +3004,9 @@ export class FeedbackAggregatorService {
 
     // Heurística 1: Janela de oportunidade para preço
     if (flags?.price_window_open && trend?.trend === 'advancing') {
-      const window = this.window(state, now, 30000); // Últimos 30s
+      if (this.inCooldown(state, 'sales_price_window_open', now)) return null;
+      const window = this.window(state, now, 30000);
+      this.setCooldown(state, 'sales_price_window_open', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_price_window_open',
@@ -2986,7 +3033,9 @@ export class FeedbackAggregatorService {
 
     // Heurística 2: Sinal forte de decisão
     if (flags?.decision_signal_strong) {
+      if (this.inCooldown(state, 'sales_decision_signal', now)) return null;
       const window = this.window(state, now, 30000);
+      this.setCooldown(state, 'sales_decision_signal', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_decision_signal',
@@ -3012,7 +3061,9 @@ export class FeedbackAggregatorService {
 
     // Heurística 3: Pronto para fechar
     if (flags?.ready_to_close && trend?.current_stage && trend.current_stage >= 4) {
+      if (this.inCooldown(state, 'sales_ready_to_close', now)) return null;
       const window = this.window(state, now, 30000);
+      this.setCooldown(state, 'sales_ready_to_close', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_ready_to_close',
@@ -3043,8 +3094,9 @@ export class FeedbackAggregatorService {
       transition.from_category === 'objection_soft' &&
       transition.to_category === 'objection_hard'
     ) {
+      if (this.inCooldown(state, 'sales_objection_escalating', now)) return null;
       const window = this.window(state, now, 60000);
-      this.setCooldown(state, 'sales_objection_escalating', now, 60000); // Cooldown de 60s
+      this.setCooldown(state, 'sales_objection_escalating', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_objection_escalating',
@@ -3076,8 +3128,9 @@ export class FeedbackAggregatorService {
       trend.trend_strength > 0.9 &&
       category === 'stalling'
     ) {
+      if (this.inCooldown(state, 'sales_conversation_stalling', now)) return null;
       const window = this.window(state, now, 60000);
-      this.setCooldown(state, 'sales_conversation_stalling', now, 120000); // Cooldown de 2min
+      this.setCooldown(state, 'sales_conversation_stalling', now, 120000);
       return {
         id: this.makeId(),
         type: 'sales_conversation_stalling',
@@ -3109,8 +3162,9 @@ export class FeedbackAggregatorService {
       transition.stage_difference &&
       transition.stage_difference >= 2
     ) {
+      if (this.inCooldown(state, 'sales_category_transition', now)) return null;
       const window = this.window(state, now, 30000);
-      this.setCooldown(state, 'sales_category_transition', now, 60000); // Cooldown de 60s
+      this.setCooldown(state, 'sales_category_transition', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_category_transition',
