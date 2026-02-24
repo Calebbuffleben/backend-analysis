@@ -2915,7 +2915,7 @@ export class FeedbackAggregatorService {
       return false;
     }
 
-    // Verificar cooldown global (30 segundos)
+    // Verificar cooldown global (2 segundos, padrão de inGlobalCooldown)
     if (this.inGlobalCooldown(state, now)) {
       return false;
     }
@@ -2986,7 +2986,9 @@ export class FeedbackAggregatorService {
 
     // Heurística 1: Janela de oportunidade para preço
     if (flags?.price_window_open && trend?.trend === 'advancing') {
-      const window = this.window(state, now, 30000); // Últimos 30s
+      if (this.inCooldown(state, 'sales_price_window_open', now)) return null;
+      const window = this.window(state, now, 30000);
+      this.setCooldown(state, 'sales_price_window_open', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_price_window_open',
@@ -3013,7 +3015,9 @@ export class FeedbackAggregatorService {
 
     // Heurística 2: Sinal forte de decisão
     if (flags?.decision_signal_strong) {
+      if (this.inCooldown(state, 'sales_decision_signal', now)) return null;
       const window = this.window(state, now, 30000);
+      this.setCooldown(state, 'sales_decision_signal', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_decision_signal',
@@ -3039,7 +3043,9 @@ export class FeedbackAggregatorService {
 
     // Heurística 3: Pronto para fechar
     if (flags?.ready_to_close && trend?.current_stage && trend.current_stage >= 4) {
+      if (this.inCooldown(state, 'sales_ready_to_close', now)) return null;
       const window = this.window(state, now, 30000);
+      this.setCooldown(state, 'sales_ready_to_close', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_ready_to_close',
@@ -3070,8 +3076,9 @@ export class FeedbackAggregatorService {
       transition.from_category === 'objection_soft' &&
       transition.to_category === 'objection_hard'
     ) {
+      if (this.inCooldown(state, 'sales_objection_escalating', now)) return null;
       const window = this.window(state, now, 60000);
-      this.setCooldown(state, 'sales_objection_escalating', now, 60000); // Cooldown de 60s
+      this.setCooldown(state, 'sales_objection_escalating', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_objection_escalating',
@@ -3103,8 +3110,9 @@ export class FeedbackAggregatorService {
       trend.trend_strength > 0.9 &&
       category === 'stalling'
     ) {
+      if (this.inCooldown(state, 'sales_conversation_stalling', now)) return null;
       const window = this.window(state, now, 60000);
-      this.setCooldown(state, 'sales_conversation_stalling', now, 120000); // Cooldown de 2min
+      this.setCooldown(state, 'sales_conversation_stalling', now, 120000);
       return {
         id: this.makeId(),
         type: 'sales_conversation_stalling',
@@ -3136,8 +3144,9 @@ export class FeedbackAggregatorService {
       transition.stage_difference &&
       transition.stage_difference >= 2
     ) {
+      if (this.inCooldown(state, 'sales_category_transition', now)) return null;
       const window = this.window(state, now, 30000);
-      this.setCooldown(state, 'sales_category_transition', now, 60000); // Cooldown de 60s
+      this.setCooldown(state, 'sales_category_transition', now, 60000);
       return {
         id: this.makeId(),
         type: 'sales_category_transition',
