@@ -34,6 +34,7 @@ type Connection = {
 @Injectable()
 export class HumeStreamService implements OnModuleDestroy {
   private readonly logger = new Logger(HumeStreamService.name);
+  private readonly enabled: boolean;
   private readonly wsUrl: string;
   private readonly wsHeaders: Record<string, string>;
   private keyToConn = new Map<string, Connection>();
@@ -44,17 +45,16 @@ export class HumeStreamService implements OnModuleDestroy {
     private readonly emitter: EventEmitter2,
     private readonly participantIndex: ParticipantIndexService,
   ) {
+    this.enabled = (process.env.HUME_ENABLED || 'false') === 'true';
     this.wsUrl = wsUrl || 'wss://api.hume.ai/v0/stream/models';
     this.wsHeaders = wsHeaders || {};
+    this.logger.log(`HumeStreamService initialized (enabled=${this.enabled})`);
   }
 
   async sendChunk(meta: HumeMeta, wavChunk: Buffer): Promise<void> {
     const key = this.buildKey(meta);
-    let conn = this.keyToConn.get(key);
-    if (!conn) {
-      conn = await this.open(key);
-    }
-    // Emit local ingestion event with RMS from the WAV chunk (pre-Hume), so volume heuristics work
+
+    // Local RMS feedback.ingestion — always fires regardless of HUME_ENABLED
     try {
       const rmsDbfs = this.computeRmsDbfsFromWav(wavChunk);
       const [meetingId, participant, track] = this.parseKey(key);
@@ -85,7 +85,13 @@ export class HumeStreamService implements OnModuleDestroy {
     } catch (e) {
       // Silent error handling
     }
-    // Always include models with each data payload to satisfy Hume's "models configured" requirement
+
+    if (!this.enabled) return;
+
+    let conn = this.keyToConn.get(key);
+    if (!conn) {
+      conn = await this.open(key);
+    }
     const payload = this.buildDataPayload(wavChunk);
     if (!conn.isOpen) {
       conn.pending.push(payload);
@@ -102,6 +108,10 @@ export class HumeStreamService implements OnModuleDestroy {
   }
 
   private async open(key: string): Promise<Connection> {
+    if (!this.enabled) {
+      const stub: Connection = { ws: null as unknown as WsClient, isOpen: false, pending: [], configured: false };
+      return stub;
+    }
     const WSClientCtor = WSRuntime as {
       new (
         url: string,
