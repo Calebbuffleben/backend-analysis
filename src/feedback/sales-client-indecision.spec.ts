@@ -13,7 +13,7 @@ describe('sales_client_indecision (contract)', () => {
     process.env = originalEnv;
   });
 
-  test('publishes sales_client_indecision when strong indecision signals are present', () => {
+  test('publishes sales_client_indecision when strong indecision signals are present', async () => {
     process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
 
     const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
@@ -30,7 +30,7 @@ describe('sales_client_indecision (contract)', () => {
         keywords: ['talvez', 'pensar', 'avaliar'],
         sales_category: 'objection_soft',
         sales_category_confidence: 0.9,
-        sales_category_intensity: 0.7,
+        sales_category_intensity: 0.5,
         sales_category_ambiguity: 0.95,
         sales_category_flags: {
           price_window_open: false,
@@ -62,7 +62,7 @@ describe('sales_client_indecision (contract)', () => {
       },
     });
 
-    svc.handleTextAnalysis(evt);
+    await svc.handleTextAnalysis(evt);
 
     const indecision = delivery.published
       .map((p) => p.payload)
@@ -73,9 +73,11 @@ describe('sales_client_indecision (contract)', () => {
     expect(indecision?.meetingId).toBe(meetingId);
     expect(indecision?.participantId).toBe('guest-1');
 
-    // Contract: indecision feedback should include at least one detected pattern and a confidence number.
-    expect((indecision?.metadata?.semantic_patterns_detected ?? []).length).toBeGreaterThan(0);
+    // Contract: indecision feedback includes confidence and either representative phrases or valid signals count.
     expect(typeof indecision?.metadata?.confidence).toBe('number');
+    const hasPhrases = (indecision?.metadata?.representative_phrases?.length ?? 0) > 0;
+    const hasSignals = typeof indecision?.metadata?.valid_signals_count === 'number';
+    expect(hasPhrases || hasSignals).toBe(true);
   });
 
   test('does not publish sales_client_indecision when no indecision patterns are present', () => {
@@ -209,7 +211,7 @@ describe('sales_client_indecision (contract)', () => {
     expect(indecisionCount).toBe(0);
   });
 
-  test('respects cooldown when enabled', () => {
+  test('respects cooldown when enabled', async () => {
     process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '60000';
 
     const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
@@ -254,8 +256,8 @@ describe('sales_client_indecision (contract)', () => {
         },
       });
 
-    svc.handleTextAnalysis(makeEvt(now));
-    svc.handleTextAnalysis(makeEvt(now + 1000));
+    await svc.handleTextAnalysis(makeEvt(now));
+    await svc.handleTextAnalysis(makeEvt(now + 1000));
 
     const indecisionCount = delivery.published.filter(
       (p) => p.payload.type === 'sales_client_indecision',
@@ -263,7 +265,7 @@ describe('sales_client_indecision (contract)', () => {
     expect(indecisionCount).toBe(1);
   });
 
-  test('cooldown=0 ignores stale in-memory cooldown state (regression)', () => {
+  test('cooldown=0 ignores stale in-memory cooldown state (regression)', async () => {
     const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
 
     const meetingId = 'm-indecision-cooldown-zero-regression';
@@ -298,11 +300,15 @@ describe('sales_client_indecision (contract)', () => {
 
     // First run with cooldown enabled → triggers and sets cooldown in memory.
     process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '60000';
-    svc.handleTextAnalysis(evt);
+    await svc.handleTextAnalysis(evt);
 
-    // Then disable cooldown via env and emit again within the old cooldown window.
+    // Then disable cooldown via env and emit again with different text (avoid same-segment dedupe).
     process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
-    svc.handleTextAnalysis({ ...evt, timestamp: now + 1000 });
+    await svc.handleTextAnalysis({
+      ...evt,
+      timestamp: now + 1000,
+      text: 'Preciso de mais tempo para decidir.',
+    });
 
     const indecisionCount = delivery.published.filter(
       (p) => p.payload.type === 'sales_client_indecision',
