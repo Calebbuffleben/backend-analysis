@@ -63,6 +63,9 @@ export type ParticipantState = {
   };
   cooldownUntilByType: Map<string, number>;
   lastFeedbackAt?: number;
+  /** Set by aggregator when any text-based feedback is published; used to suppress repeated indecision for same segment. */
+  lastFeedbackText?: string;
+  lastFeedbackTextAt?: number;
   // NOVO: Dados de análise de texto
   textAnalysis?: {
     sentiment: {

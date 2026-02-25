@@ -485,7 +485,8 @@ export class FeedbackAggregatorService {
       salesCategory: evt.analysis?.sales_category ?? 'null',
     });
     
-    const key = this.key(evt.meetingId, evt.participantId);
+    const participantId = evt.participantId ?? '';
+    const key = this.key(evt.meetingId, participantId);
     let state = this.byKey.get(key);
 
     if (!state) {
@@ -547,7 +548,7 @@ export class FeedbackAggregatorService {
     }
 
     // Re-executar pipeline A2E2 com dados combinados
-    const ctx = this.createDetectionContext(evt.meetingId, evt.participantId, now);
+    const ctx = this.createDetectionContext(evt.meetingId, participantId, now);
     const feedback = runA2E2Pipeline(state, ctx);
 
     if (feedback) {

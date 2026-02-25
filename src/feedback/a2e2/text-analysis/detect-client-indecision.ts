@@ -178,6 +178,25 @@ export class DetectClientIndecision {
       return null;
     }
 
+    // Same-segment suppression: avoid repeating indecision for the same speech within 60s.
+    // The aggregator sets lastFeedbackText/lastFeedbackTextAt when any text-based feedback is published.
+    const SAME_SEGMENT_WINDOW_MS = 60_000;
+    const timeSinceLastTextFeedback = typeof state.lastFeedbackTextAt === 'number'
+      ? now - state.lastFeedbackTextAt
+      : Infinity;
+    if (
+      timeSinceLastTextFeedback < SAME_SEGMENT_WINDOW_MS &&
+      state.lastFeedbackText &&
+      this.textSimilar(state.lastFeedbackText, evt.text ?? '', 0.6)
+    ) {
+      this.logger.debug('🔇 [INDECISION] Same speech segment — skipping (already sent feedback for this segment)', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        timeSinceLastTextFeedbackMs: timeSinceLastTextFeedback,
+      });
+      return null;
+    }
+
     // ========================================================================
     // Detectar indecisão ativa (janela curta de chunks)
     // ========================================================================
@@ -1465,6 +1484,18 @@ export class DetectClientIndecision {
 
     // Garantir range [0, 1]
     return Math.max(0.0, Math.min(1.0, confidence));
+  }
+
+  private textSimilar(a: string, b: string, threshold = 0.6): boolean {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
+    if (wordsA.size === 0 || wordsB.size === 0) return a === b;
+    let intersection = 0;
+    for (const w of wordsA) {
+      if (wordsB.has(w)) intersection++;
+    }
+    const containment = Math.max(intersection / wordsA.size, intersection / wordsB.size);
+    return containment >= threshold;
   }
 
   private inCooldown(state: ParticipantState, type: string, now: number): boolean {
