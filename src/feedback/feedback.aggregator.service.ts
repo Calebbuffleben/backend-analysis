@@ -26,7 +26,9 @@ type ParticipantState = {
     emotions: Map<string, number>; // EMA per specific emotion
   };
   cooldownUntilByType: Map<string, number>;
-  lastFeedbackAt?: number; // Global cooldown to prevent spam
+  lastFeedbackAt?: number;
+  lastFeedbackText?: string;
+  lastFeedbackTextAt?: number;
   // NOVO: Dados de análise de texto
   textAnalysis?: {
     sentiment: {
@@ -523,15 +525,23 @@ export class FeedbackAggregatorService {
 
     this.updateStateWithTextAnalysis(state, evt);
 
-    // Unified anti-spam: throttle ALL feedback generation across all three pipelines.
-    // State is already updated above so textHistory/analysis stay current.
-    const UNIFIED_MIN_GAP_MS = 5_000;
-    if (this.inGlobalCooldown(state, now, UNIFIED_MIN_GAP_MS)) {
-      this.logger.debug('⏱️ [THROTTLE] handleTextAnalysis skipped — unified 5s cooldown active', {
+    // Suppress feedback for the same speech segment: if text is similar to the
+    // text that generated the last text-based feedback AND that feedback was
+    // recent (<30s), skip all pipelines. Uses lastFeedbackTextAt (not lastFeedbackAt)
+    // so that ingestion-path prosody feedback does not extend the suppression window.
+    const SPEECH_SEGMENT_WINDOW_MS = 30_000;
+    const timeSinceLastTextFeedback = typeof state.lastFeedbackTextAt === 'number'
+      ? now - state.lastFeedbackTextAt
+      : Infinity;
+    if (
+      timeSinceLastTextFeedback < SPEECH_SEGMENT_WINDOW_MS &&
+      state.lastFeedbackText &&
+      this.textSimilar(state.lastFeedbackText, evt.text)
+    ) {
+      this.logger.debug('🔇 [SPEECH_DEDUPE] Same speech segment — skipping feedback generation', {
         meetingId: evt.meetingId,
         participantId: evt.participantId,
-        lastFeedbackAt: state.lastFeedbackAt,
-        now,
+        timeSinceLastTextFeedbackMs: timeSinceLastTextFeedback,
       });
       return;
     }
@@ -565,6 +575,11 @@ export class FeedbackAggregatorService {
     const salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
     if (salesTextAnalysisFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
+    }
+
+    if (feedback || salesFeedback || salesTextAnalysisFeedback) {
+      state.lastFeedbackText = evt.text;
+      state.lastFeedbackTextAt = now;
     }
     
     const t9_feedback_generated = Date.now();
@@ -2109,6 +2124,18 @@ export class FeedbackAggregatorService {
 
   private inGlobalCooldown(state: ParticipantState, now: number, minGapMs = 2000): boolean {
     return typeof state.lastFeedbackAt === 'number' && now - state.lastFeedbackAt < minGapMs;
+  }
+
+  private textSimilar(a: string, b: string, threshold = 0.6): boolean {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
+    if (wordsA.size === 0 || wordsB.size === 0) return a === b;
+    let intersection = 0;
+    for (const w of wordsA) {
+      if (wordsB.has(w)) intersection++;
+    }
+    const containment = Math.max(intersection / wordsA.size, intersection / wordsB.size);
+    return containment >= threshold;
   }
 
   private initState(): ParticipantState {
