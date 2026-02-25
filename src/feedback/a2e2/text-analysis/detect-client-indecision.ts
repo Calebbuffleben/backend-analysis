@@ -141,14 +141,22 @@ export class DetectClientIndecision {
     // e se há ≥ 1 sinal válido, então não precisamos verificar antes
     const activeIndecision = this.detectActiveIndecision(state, 5);
 
-    if (!activeIndecision || !activeIndecision.isActive) {
+    // Exigir que o chunk ATUAL (última fala) mostre indecisão. Caso contrário, após
+    // disparar uma vez de forma legítima, o histórico ainda tem chunks antigos com
+    // indecisão e qualquer fala nova faria a média dos últimos 5 passar de novo.
+    const currentChunkHasIndecision = this.currentChunkHasIndecisionSignal(state);
+
+    if (!activeIndecision || !activeIndecision.isActive || !currentChunkHasIndecision) {
       // Fallback para conversas longas: exige 3+ sinais e média de intensity >= 0.35
       const recentSignals = this.getRecentIndecisionSignals(state, now, 60000, 0.35);
       const recentSignalsCount = recentSignals.length;
       const recentAverageIntensity = recentSignalsCount > 0
         ? recentSignals.reduce((sum, entry) => sum + (entry.sales_category_intensity ?? 0), 0) / recentSignalsCount
         : 0;
-      const hasRecentStrongPattern = recentSignalsCount >= 3 && recentAverageIntensity >= 0.35;
+      const hasRecentStrongPattern =
+        recentSignalsCount >= 3 &&
+        recentAverageIntensity >= 0.35 &&
+        currentChunkHasIndecision;
 
       if (hasRecentStrongPattern) {
         const confidence = recentAverageIntensity;
@@ -554,6 +562,25 @@ export class DetectClientIndecision {
       averageConfidence,
       signalsCount: filteredSignalsCount,
     };
+  }
+
+  /**
+   * Verifica se o chunk atual (última entrada do histórico) tem sinal de indecisão.
+   * Usado para evitar re-disparo em "qualquer fala" após um feedback legítimo:
+   * o caminho "active" só dispara se a fala ATUAL mostrar indecisão, não só o histórico.
+   */
+  private currentChunkHasIndecisionSignal(state: ParticipantState): boolean {
+    const textHistory = state.textAnalysis?.textHistory ?? [];
+    if (textHistory.length === 0) return false;
+    const last = textHistory[textHistory.length - 1];
+    const category = last?.sales_category;
+    const intensity = last?.sales_category_intensity ?? 0;
+    const indecisionCategories = ['stalling', 'objection_soft'];
+    return (
+      category != null &&
+      indecisionCategories.includes(category) &&
+      intensity >= 0.20
+    );
   }
 
   private getRecentIndecisionSignals(
