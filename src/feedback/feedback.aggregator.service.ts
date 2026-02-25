@@ -537,6 +537,8 @@ export class FeedbackAggregatorService {
       );
     }
 
+    this.updateStateWithTextAnalysis(state, evt);
+
     const SPEECH_SEGMENT_WINDOW_MS = 30_000;
     const timeSinceLastTextFeedback = typeof state.lastFeedbackTextAt === 'number'
       ? now - state.lastFeedbackTextAt
@@ -555,14 +557,6 @@ export class FeedbackAggregatorService {
     }
 
     const ctx = this.createDetectionContext(evt.meetingId, participantId, now);
-
-    // Text-analysis pipeline (indecision / solution-understood) roda ANTES de atualizar o state
-    // com o chunk atual. Assim o detector avalia apenas o histórico ANTERIOR; não dispara só porque
-    // o chunk que estamos processando foi classificado como indecisão (evita "qualquer fala" disparar).
-    const salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
-
-    this.updateStateWithTextAnalysis(state, evt);
-
     const feedback = runA2E2Pipeline(state, ctx);
     if (feedback) {
       this.delivery.publishToHosts(evt.meetingId, feedback);
@@ -572,6 +566,8 @@ export class FeedbackAggregatorService {
     if (salesFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesFeedback);
     }
+
+    const salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
     if (salesTextAnalysisFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
       // Defense-in-depth: set indecision cooldown at aggregator so it is visible before next event is processed.
