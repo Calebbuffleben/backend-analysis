@@ -362,6 +362,8 @@ const THRESHOLDS = {
 export class FeedbackAggregatorService {
   private readonly logger = new Logger(FeedbackAggregatorService.name);
   private readonly byKey = new Map<string, ParticipantState>(); // key = meetingId:participantId
+  /** Serializes handleTextAnalysis per participant so cooldown set by one event is visible to the next. */
+  private readonly textAnalysisLockByKey = new Map<string, Promise<void>>();
   private readonly shortWindowMs = THRESHOLDS.windows.short;
   private readonly longWindowMs = THRESHOLDS.windows.long;
   private readonly trendWindowMs = THRESHOLDS.windows.trend;
@@ -456,7 +458,7 @@ export class FeedbackAggregatorService {
   @OnEvent('text.analysis', { async: true })
   async handleTextAnalysis(evt: TextAnalysisResult): Promise<void> {
     const t8_handler_start = Date.now();
-    
+
     // Filtro rápido: descartar textos de UI/CTA do Google Meet para não poluir histórico nem detecção.
     const textLower = (evt.text || '').toLowerCase();
     const isMeetUiText =
@@ -475,7 +477,6 @@ export class FeedbackAggregatorService {
       return;
     }
 
-    // FASE 3: Log imediato para confirmar que handler está registrado e sendo executado
     this.logger.log('✅ [SANITY] handleTextAnalysis() called - handler is registered and working', {
       meetingId: evt.meetingId,
       participantId: evt.participantId,
@@ -484,28 +485,40 @@ export class FeedbackAggregatorService {
       hasSalesCategory: !!evt.analysis?.sales_category,
       salesCategory: evt.analysis?.sales_category ?? 'null',
     });
-    
+
     const participantId = evt.participantId ?? '';
     const key = this.key(evt.meetingId, participantId);
     let state = this.byKey.get(key);
-
     if (!state) {
       this.logger.warn(`No state found for ${key}, creating new state`);
       state = this.initState();
       this.byKey.set(key, state);
     }
 
+    // Serialize per participant so cooldown set by one event is visible to the next (prevents indecision loop).
+    const prev = this.textAnalysisLockByKey.get(key) ?? Promise.resolve();
+    const ourRun = prev.then(() => this.runHandleTextAnalysisCore(evt, key, participantId, t8_handler_start));
+    this.textAnalysisLockByKey.set(key, ourRun);
+    await ourRun;
+  }
+
+  private async runHandleTextAnalysisCore(
+    evt: TextAnalysisResult,
+    key: string,
+    participantId: string,
+    t8_handler_start: number,
+  ): Promise<void> {
+    const state = this.byKey.get(key);
+    if (!state) return;
     const now = evt.timestamp;
 
-    // Log de sales_category antes de atualizar estado
     if (evt.analysis.sales_category) {
       const flagsInfo = evt.analysis.sales_category_flags
         ? Object.entries(evt.analysis.sales_category_flags)
             .filter(([, value]) => value === true)
-            .map(([key]) => key)
+            .map(([k]) => k)
             .join(', ')
         : '';
-      
       this.logger.log(
         `💼 [SALES CATEGORY] Processing sales category: ${evt.analysis.sales_category}${flagsInfo ? ` [Flags: ${flagsInfo}]` : ''}`,
         {
@@ -526,10 +539,6 @@ export class FeedbackAggregatorService {
 
     this.updateStateWithTextAnalysis(state, evt);
 
-    // Suppress feedback for the same speech segment: if text is similar to the
-    // text that generated the last text-based feedback AND that feedback was
-    // recent (<30s), skip all pipelines. Uses lastFeedbackTextAt (not lastFeedbackAt)
-    // so that ingestion-path prosody feedback does not extend the suppression window.
     const SPEECH_SEGMENT_WINDOW_MS = 30_000;
     const timeSinceLastTextFeedback = typeof state.lastFeedbackTextAt === 'number'
       ? now - state.lastFeedbackTextAt
@@ -547,65 +556,46 @@ export class FeedbackAggregatorService {
       return;
     }
 
-    // Re-executar pipeline A2E2 com dados combinados
     const ctx = this.createDetectionContext(evt.meetingId, participantId, now);
     const feedback = runA2E2Pipeline(state, ctx);
-
     if (feedback) {
       this.delivery.publishToHosts(evt.meetingId, feedback);
     }
 
-    // ========================================================================
-    // HEURÍSTICAS DE FEEDBACK DE VENDAS (Baseadas em Sinais Semânticos)
-    // ========================================================================
-    // Gera feedbacks específicos para vendas baseados em:
-    // - Flags semânticas (price_window_open, decision_signal_strong, ready_to_close)
-    // - Transições de categoria (advancing, regressing)
-    // - Tendência semântica (advancing, stable, regressing)
-    // ========================================================================
     const salesFeedback = this.generateSalesFeedback(state, evt, now);
     if (salesFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesFeedback);
     }
 
-    // ========================================================================
-    // A2E2 - TEXT ANALYSIS (vendas): indecisão + solução compreendida
-    // ========================================================================
-    // Executa independentemente da pipeline A2E2 principal (emoções/prosódia)
-    // para permitir que feedbacks de vendas sejam publicados junto com feedbacks emocionais
     const salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
     if (salesTextAnalysisFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
+      // Defense-in-depth: set indecision cooldown at aggregator so it is visible before next event is processed.
+      const raw = process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS;
+      const indecisionCooldownMs = raw ? Math.max(0, Number.parseInt(raw, 10)) : 120_000;
+      if (Number.isFinite(indecisionCooldownMs) && indecisionCooldownMs > 0) {
+        state.cooldownUntilByType.set('sales_client_indecision', now + indecisionCooldownMs);
+        state.lastFeedbackAt = now;
+      }
     }
 
     if (feedback || salesFeedback || salesTextAnalysisFeedback) {
       state.lastFeedbackText = evt.text;
       state.lastFeedbackTextAt = now;
     }
-    
+
     const t9_feedback_generated = Date.now();
-    
-    // Extrair t0 do timing (se disponível)
     const timing = (evt as any).timing;
     const t0_capture = timing?.t0_capture || evt.timestamp;
-    
     this.logger.log(`[LATENCY] Feedback pipeline complete`, {
       meetingId: evt.meetingId,
       participantId: evt.participantId,
-      timestamps: {
-        t0_capture,
-        t8_handler_start,
-        t9_complete: t9_feedback_generated,
-      },
+      timestamps: { t0_capture, t8_handler_start, t9_complete: t9_feedback_generated },
       latencies_ms: {
         handler_processing: t9_feedback_generated - t8_handler_start,
         end_to_end_total: t9_feedback_generated - t0_capture,
       },
-      feedbacks_generated: {
-        a2e2: !!feedback,
-        sales: !!salesFeedback,
-        text_analysis: !!salesTextAnalysisFeedback,
-      },
+      feedbacks_generated: { a2e2: !!feedback, sales: !!salesFeedback, text_analysis: !!salesTextAnalysisFeedback },
     });
   }
 
