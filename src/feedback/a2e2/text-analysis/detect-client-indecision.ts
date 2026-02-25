@@ -95,9 +95,10 @@ export class DetectClientIndecision {
     if (textHistory.length === 0) {
       const currentIntensity = textAnalysis.sales_category_intensity ?? 0;
       const currentCategory = textAnalysis.sales_category;
-      const hasStrongSignal = currentCategory &&
+      const hasStrongSignal = currentCategory && 
         ['stalling', 'objection_soft'].includes(currentCategory) &&
-        currentIntensity >= 0.45;
+        currentIntensity >= 0.30;
+      
       if (!hasStrongSignal) {
         return null;
       }
@@ -143,12 +144,12 @@ export class DetectClientIndecision {
 
     if (!activeIndecision || !activeIndecision.isActive) {
       // Fallback para conversas longas: verificar sinais fortes recentes na janela temporal
-      const recentSignals = this.getRecentIndecisionSignals(state, now, 60000, 0.35);
+      const recentSignals = this.getRecentIndecisionSignals(state, now, 60000, 0.25);
       const recentSignalsCount = recentSignals.length;
       const recentAverageIntensity = recentSignalsCount > 0
         ? recentSignals.reduce((sum, entry) => sum + (entry.sales_category_intensity ?? 0), 0) / recentSignalsCount
         : 0;
-      const hasRecentStrongPattern = recentSignalsCount >= 3 && recentAverageIntensity >= 0.35;
+      const hasRecentStrongPattern = recentSignalsCount >= 2 && recentAverageIntensity >= 0.25;
 
       if (hasRecentStrongPattern) {
         const confidence = recentAverageIntensity;
@@ -202,6 +203,11 @@ export class DetectClientIndecision {
         };
       }
 
+      // Inferred path: só disparar se a categoria PRINCIPAL do chunk for indecisão.
+      // Caso contrário, disparar quando stalling/objection_soft está só no top-3 faz "qualquer fala" gerar feedback.
+      const primaryCategory = textAnalysis?.sales_category;
+      const primaryIsIndecision = primaryCategory != null && ['stalling', 'objection_soft'].includes(primaryCategory);
+
       const inferredIndecisionCategory = this.inferIndecisionCategoryFromScores(textAnalysis);
       const indecisionMetrics = textAnalysis?.indecision_metrics;
       const conditionalKeywords = textAnalysis?.conditional_keywords_detected ?? [];
@@ -209,12 +215,13 @@ export class DetectClientIndecision {
         (indecisionMetrics?.postponement_likelihood ?? 0) >= 0.6 ||
         (indecisionMetrics?.conditional_language_score ?? 0) >= 0.5 ||
         (indecisionMetrics?.indecision_score ?? 0) >= 0.6;
-      const hasConditionalKeywords = conditionalKeywords.length >= 2;
+      const hasConditionalKeywords = conditionalKeywords.length >= 1;
       const bestScore = textAnalysis?.sales_category_best_score ?? 0;
       const intensity = textAnalysis?.sales_category_intensity ?? 0;
       const hasStrongIndecisionSignal =
+        primaryIsIndecision &&
         inferredIndecisionCategory !== null &&
-        (bestScore >= 0.22 || intensity >= 0.35) &&
+        (bestScore >= 0.12 || intensity >= 0.25) &&
         (hasStrongMetrics || hasConditionalKeywords);
 
       if (hasStrongIndecisionSignal) {
@@ -425,8 +432,10 @@ export class DetectClientIndecision {
     }
 
     const indecisionCategories = ['stalling', 'objection_soft'];
-    const baseMinConfidence = 0.20; // Coleta: só chunks com intensity >= 20%
-    const minSignals = 1;
+    // Threshold inicial reduzido para 0.05 (de 0.12) para capturar sinais fracos
+    // Os thresholds dinâmicos serão aplicados APENAS na validação final (average intensity)
+    const baseMinConfidence = 0.05; // Threshold base para coleta inicial (muito permissivo)
+    const minSignals = 1; // Mínimo de sinais válidos
 
     // ========================================================================
     // Obter últimos N chunks (mais recentes primeiro)
@@ -493,13 +502,25 @@ export class DetectClientIndecision {
     // ========================================================================
     const signalsCount = validSignals.length;
     
+    // Calcular threshold dinâmico para validação final usando AVERAGE INTENSITY
+    // IMPORTANTE: Não aplicamos threshold dinâmico na coleta individual para evitar filtragem dupla
+    // O threshold dinâmico é aplicado APENAS na validação final (average intensity).
+    // Thresholds adaptativos:
+    // - 1 sinal: threshold 0.15 - permite feedbacks quando há padrão claro
+    // - 2 sinais: threshold 0.12 - permite feedbacks quando há múltiplos sinais
+    // - 3+ sinais: threshold 0.10 - permite feedbacks quando há padrão consistente
+    // Lógica adaptativa: menos sinais = threshold mais alto (mais conservador)
     let dynamicMinAverageIntensity: number;
+    
     if (signalsCount === 1) {
-      dynamicMinAverageIntensity = 0.30;
+      // PRIORIDADE 1: Com apenas 1 sinal, ser mais conservador (threshold mais alto)
+      dynamicMinAverageIntensity = 0.15;
     } else if (signalsCount >= 2 && signalsCount < 3) {
-      dynamicMinAverageIntensity = 0.22;
+      // PRIORIDADE 1: Com 2 sinais, usar threshold médio
+      dynamicMinAverageIntensity = 0.12;
     } else {
-      dynamicMinAverageIntensity = 0.18;
+      // PRIORIDADE 1: Com 3+ sinais, ser mais permissivo (threshold mais baixo)
+      dynamicMinAverageIntensity = 0.10;
     }
     
     if (signalsCount < minSignals) {
@@ -595,7 +616,7 @@ export class DetectClientIndecision {
     }
 
     const scoreGap = bestScore - bestIndecision.score;
-    if (bestIndecision.score >= 0.22 && scoreGap <= 0.05) {
+    if (bestIndecision.score >= 0.12 && scoreGap <= 0.05) {
       return bestIndecision.category;
     }
 
