@@ -99,6 +99,11 @@ O backend depende de um arquivo `.env` com credenciais de banco, LiveKit e integ
 - **`SALES_SOLUTION_CONTEXT_WINDOW_MS`**: ms (default: `90000`)
 - **`SALES_SOLUTION_CONTEXT_MAX_ENTRIES`**: int (default: `12`)
 
+### Detecção: Indecisão do cliente (`sales_client_indecision`)
+
+- **`SALES_CLIENT_INDECISION_COOLDOWN_MS`**: ms (default: `120000`). Intervalo mínimo entre dois feedbacks de indecisão para o mesmo participante. **`0` desativa o cooldown** — não recomendado em produção (pode gerar disparos em “qualquer fala” após o primeiro feedback).
+- **`SALES_CLIENT_INDECISION_SOURCE_ONLY`**: opcional. Se `buffer`, feedback de indecisão é publicado apenas para eventos com `source: 'buffer'` (áudio → Whisper); eventos `source: 'egress'` (transcription_chunk/legendas) não geram feedback de indecisão. Vazio ou ausente = ambas as origens.
+
 ## Executando a aplicação
 
 ### Desenvolvimento

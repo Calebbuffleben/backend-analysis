@@ -197,6 +197,8 @@ export interface TextAnalysisResult {
      */
     reformulation_marker_score?: number;
   };
+  /** Origem do resultado: 'buffer' (áudio → Whisper) ou 'egress' (transcription_chunk / legendas). Usado para diagnóstico e política por origem. */
+  source?: 'buffer' | 'egress';
   timestamp: number;
   confidence: number;
 }

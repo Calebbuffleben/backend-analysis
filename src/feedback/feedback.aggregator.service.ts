@@ -480,6 +480,7 @@ export class FeedbackAggregatorService {
     this.logger.log('✅ [SANITY] handleTextAnalysis() called - handler is registered and working', {
       meetingId: evt.meetingId,
       participantId: evt.participantId,
+      source: evt.source ?? 'unknown',
       textLength: evt.text?.length ?? 0,
       textPreview: evt.text?.substring(0, 50) ?? 'null',
       hasSalesCategory: !!evt.analysis?.sales_category,
@@ -543,15 +544,21 @@ export class FeedbackAggregatorService {
     const timeSinceLastTextFeedback = typeof state.lastFeedbackTextAt === 'number'
       ? now - state.lastFeedbackTextAt
       : Infinity;
+    const lastText = (state.lastFeedbackText ?? '').trim();
+    const currentText = (evt.text ?? '').trim();
+    const isSameSegmentBySimilarity = lastText && currentText && this.textSimilar(state.lastFeedbackText!, evt.text);
+    const isSameSegmentByContainment =
+      lastText && currentText && currentText.toLowerCase().includes(lastText.toLowerCase());
     if (
       timeSinceLastTextFeedback < SPEECH_SEGMENT_WINDOW_MS &&
       state.lastFeedbackText &&
-      this.textSimilar(state.lastFeedbackText, evt.text)
+      (isSameSegmentBySimilarity || isSameSegmentByContainment)
     ) {
       this.logger.debug('🔇 [SPEECH_DEDUPE] Same speech segment — skipping feedback generation', {
         meetingId: evt.meetingId,
         participantId: evt.participantId,
         timeSinceLastTextFeedbackMs: timeSinceLastTextFeedback,
+        reason: isSameSegmentByContainment ? 'containment' : 'similarity',
       });
       return;
     }
@@ -567,15 +574,30 @@ export class FeedbackAggregatorService {
       this.delivery.publishToHosts(evt.meetingId, salesFeedback);
     }
 
-    const salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
+    let salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
+    // Opcional: só publicar feedback de indecisão quando origem for buffer (evita egress amplificar disparos).
+    const indecisionSourceOnly = process.env.SALES_CLIENT_INDECISION_SOURCE_ONLY || '';
+    if (
+      salesTextAnalysisFeedback?.type === 'sales_client_indecision' &&
+      indecisionSourceOnly === 'buffer' &&
+      evt.source === 'egress'
+    ) {
+      salesTextAnalysisFeedback = null;
+      this.logger.debug('🔇 [INDECISION_SOURCE] Dropping indecision feedback from egress (SALES_CLIENT_INDECISION_SOURCE_ONLY=buffer)', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+      });
+    }
     if (salesTextAnalysisFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
       // Defense-in-depth: set indecision cooldown at aggregator so it is visible before next event is processed.
+      // Use Date.now() (server time) so cooldown is robust to evt.timestamp skew (client/Redis).
       const raw = process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS;
       const indecisionCooldownMs = raw ? Math.max(0, Number.parseInt(raw, 10)) : 120_000;
       if (Number.isFinite(indecisionCooldownMs) && indecisionCooldownMs > 0) {
-        state.cooldownUntilByType.set('sales_client_indecision', now + indecisionCooldownMs);
-        state.lastFeedbackAt = now;
+        const serverNow = Date.now();
+        state.cooldownUntilByType.set('sales_client_indecision', serverNow + indecisionCooldownMs);
+        state.lastFeedbackAt = serverNow;
       }
     }
 

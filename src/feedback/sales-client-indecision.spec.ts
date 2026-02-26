@@ -80,6 +80,87 @@ describe('sales_client_indecision (contract)', () => {
     expect(hasPhrases || hasSignals).toBe(true);
   });
 
+  test('does not publish second indecision when current chunk has no indecision (avoids loop on any speech)', async () => {
+    process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
+
+    const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
+
+    const meetingId = 'm-indecision-no-loop';
+    const now = 1_700_000_000_000;
+
+    // 1st event: indecision → should fire once
+    await svc.handleTextAnalysis(
+      makeTextAnalysisResult({
+        meetingId,
+        participantId: 'guest-1',
+        timestamp: now,
+        text: 'Talvez eu precise pensar melhor antes de decidir.',
+        analysis: {
+          sales_category: 'objection_soft',
+          sales_category_confidence: 0.9,
+          sales_category_intensity: 0.5,
+          sales_category_flags: {
+            indecision_detected: true,
+            decision_postponement_signal: true,
+            conditional_language_signal: true,
+          },
+          sales_category_aggregated: {
+            dominant_category: 'stalling',
+            chunks_with_category: 5,
+            total_chunks: 5,
+            stability: 0.8,
+            category_distribution: { stalling: 0.6, objection_soft: 0.2 },
+          },
+          sales_category_trend: { trend: 'stable', trend_strength: 0.8, current_stage: 2, velocity: 0.05 },
+          indecision_metrics: {
+            indecision_score: 0.8,
+            postponement_likelihood: 0.8,
+            conditional_language_score: 0.8,
+          },
+        },
+      }),
+    );
+
+    const afterFirst = delivery.published.filter((p) => p.payload.type === 'sales_client_indecision').length;
+    expect(afterFirst).toBe(1);
+
+    // 2nd event: different text, NO indecision in current chunk (value_exploration) → must NOT fire again
+    await svc.handleTextAnalysis(
+      makeTextAnalysisResult({
+        meetingId,
+        participantId: 'guest-1',
+        timestamp: now + 2000,
+        text: 'Ok, vamos ver.',
+        analysis: {
+          sales_category: 'value_exploration',
+          sales_category_confidence: 0.9,
+          sales_category_intensity: 0.3,
+          sales_category_flags: {
+            indecision_detected: false,
+            decision_postponement_signal: false,
+            conditional_language_signal: false,
+          },
+          sales_category_aggregated: {
+            dominant_category: 'value_exploration',
+            chunks_with_category: 6,
+            total_chunks: 6,
+            stability: 0.7,
+            category_distribution: { value_exploration: 0.5, stalling: 0.3, objection_soft: 0.2 },
+          },
+          sales_category_trend: { trend: 'stable', trend_strength: 0.7, current_stage: 2, velocity: 0.05 },
+          indecision_metrics: {
+            indecision_score: 0.2,
+            postponement_likelihood: 0.2,
+            conditional_language_score: 0.2,
+          },
+        },
+      }),
+    );
+
+    const afterSecond = delivery.published.filter((p) => p.payload.type === 'sales_client_indecision').length;
+    expect(afterSecond).toBe(1);
+  });
+
   test('does not publish sales_client_indecision when no indecision patterns are present', () => {
     process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
 

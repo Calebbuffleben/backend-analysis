@@ -115,8 +115,8 @@ export class DetectClientIndecision {
       ? Math.max(0, indecisionCooldownMs)
       : 120000;
 
-    // Se cooldown configurado é 0, não bloquear por cooldown (mesmo que tenha sobrado estado antigo).
-    if (effectiveIndecisionCooldownMs > 0 && this.inCooldown(state, 'sales_client_indecision', now)) {
+    // Cooldown usa relógio do servidor (Date.now()) para não ser afetado por evt.timestamp fora de ordem.
+    if (effectiveIndecisionCooldownMs > 0 && this.inCooldown(state, 'sales_client_indecision', Date.now())) {
       return null;
     }
 
@@ -137,14 +137,11 @@ export class DetectClientIndecision {
     // ========================================================================
     // Detectar indecisão ativa (janela curta de chunks)
     // ========================================================================
-    // Nota: detectActiveIndecision() já valida se há chunks suficientes
-    // e se há ≥ 1 sinal válido, então não precisamos verificar antes
-    const activeIndecision = this.detectActiveIndecision(state, 5);
-
-    // Exigir que o chunk ATUAL (última fala) mostre indecisão. Caso contrário, após
-    // disparar uma vez de forma legítima, o histórico ainda tem chunks antigos com
-    // indecisão e qualquer fala nova faria a média dos últimos 5 passar de novo.
+    // Exigir que o chunk ATUAL mostre indecisão (evita loop: disparar em "qualquer fala"
+    // após o primeiro feedback, quando o histórico ainda tem indecisão nos últimos 5).
     const currentChunkHasIndecision = this.currentChunkHasIndecisionSignal(state);
+
+    const activeIndecision = this.detectActiveIndecision(state, 5);
 
     if (!activeIndecision || !activeIndecision.isActive || !currentChunkHasIndecision) {
       // Fallback para conversas longas: exige 3+ sinais e média de intensity >= 0.35
@@ -566,8 +563,8 @@ export class DetectClientIndecision {
 
   /**
    * Verifica se o chunk atual (última entrada do histórico) tem sinal de indecisão.
-   * Usado para evitar re-disparo em "qualquer fala" após um feedback legítimo:
-   * o caminho "active" só dispara se a fala ATUAL mostrar indecisão, não só o histórico.
+   * Evita disparo em "qualquer fala" após o primeiro feedback (histórico com indecisão
+   * nos últimos 5 chunks não basta; a fala atual deve mostrar indecisão).
    */
   private currentChunkHasIndecisionSignal(state: ParticipantState): boolean {
     const textHistory = state.textAnalysis?.textHistory ?? [];
