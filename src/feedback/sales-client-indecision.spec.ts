@@ -73,11 +73,9 @@ describe('sales_client_indecision (contract)', () => {
     expect(indecision?.meetingId).toBe(meetingId);
     expect(indecision?.participantId).toBe('guest-1');
 
-    // Contract: indecision feedback includes confidence and either representative phrases or valid signals count.
+    // Contract: indecision feedback includes confidence and representative phrases.
     expect(typeof indecision?.metadata?.confidence).toBe('number');
-    const hasPhrases = (indecision?.metadata?.representative_phrases?.length ?? 0) > 0;
-    const hasSignals = typeof indecision?.metadata?.valid_signals_count === 'number';
-    expect(hasPhrases || hasSignals).toBe(true);
+    expect((indecision?.metadata?.representative_phrases?.length ?? 0) > 0).toBe(true);
   });
 
   test('does not publish second indecision when current chunk has no indecision (avoids loop on any speech)', async () => {
@@ -206,7 +204,122 @@ describe('sales_client_indecision (contract)', () => {
     expect(indecisionCount).toBe(0);
   });
 
-  test('does not publish sales_client_indecision when chunks_with_category is 0', () => {
+  test('fires only when conditional_language_score > 0.6 (rule 1)', async () => {
+    process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
+
+    const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
+    const meetingId = 'm-cond-only';
+    const now = 1_700_000_000_000;
+
+    await svc.handleTextAnalysis(
+      makeTextAnalysisResult({
+        meetingId,
+        participantId: 'guest-1',
+        timestamp: now,
+        text: 'Se for o caso, talvez a gente possa considerar.',
+        analysis: {
+          sales_category: 'value_exploration',
+          sales_category_intensity: 0.2,
+          indecision_metrics: {
+            indecision_score: 0.3,
+            postponement_likelihood: 0.3,
+            conditional_language_score: 0.65,
+          },
+        },
+      }),
+    );
+
+    const indecision = delivery.published
+      .map((p) => p.payload)
+      .find((p) => p.type === 'sales_client_indecision');
+    expect(indecision).toBeDefined();
+    expect(indecision?.metadata?.confidence).toBeGreaterThanOrEqual(0.65);
+  });
+
+  test('fires only when postponement_likelihood > 0.6 (rule 2)', async () => {
+    process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
+
+    const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
+    const meetingId = 'm-post-only';
+    const now = 1_700_000_010_000;
+
+    await svc.handleTextAnalysis(
+      makeTextAnalysisResult({
+        meetingId,
+        participantId: 'guest-1',
+        timestamp: now,
+        text: 'Deixa eu deixar para a próxima semana.',
+        analysis: {
+          sales_category: 'value_exploration',
+          sales_category_intensity: 0.2,
+          indecision_metrics: {
+            indecision_score: 0.4,
+            postponement_likelihood: 0.7,
+            conditional_language_score: 0.4,
+          },
+        },
+      }),
+    );
+
+    const indecision = delivery.published
+      .map((p) => p.payload)
+      .find((p) => p.type === 'sales_client_indecision');
+    expect(indecision).toBeDefined();
+    expect(indecision?.metadata?.confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  test('fires when sales_category is stalling and intensity > 0.5 in 20s window (rule 3)', async () => {
+    process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
+
+    const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
+    const meetingId = 'm-stalling-20s';
+    const now = 1_700_000_020_000;
+
+    // First chunk: stalling + intensity > 0.5 (within 20s)
+    await svc.handleTextAnalysis(
+      makeTextAnalysisResult({
+        meetingId,
+        participantId: 'guest-1',
+        timestamp: now - 5000,
+        text: 'Não sei, ainda estou pensando.',
+        analysis: {
+          sales_category: 'stalling',
+          sales_category_intensity: 0.6,
+          indecision_metrics: {
+            indecision_score: 0.2,
+            postponement_likelihood: 0.2,
+            conditional_language_score: 0.2,
+          },
+        },
+      }),
+    );
+
+    // Second chunk: again stalling + intensity > 0.5 (current qualifies; history has one in 20s)
+    await svc.handleTextAnalysis(
+      makeTextAnalysisResult({
+        meetingId,
+        participantId: 'guest-1',
+        timestamp: now,
+        text: 'Ainda preciso de mais tempo para decidir.',
+        analysis: {
+          sales_category: 'stalling',
+          sales_category_intensity: 0.55,
+          indecision_metrics: {
+            indecision_score: 0.2,
+            postponement_likelihood: 0.2,
+            conditional_language_score: 0.2,
+          },
+        },
+      }),
+    );
+
+    const indecision = delivery.published
+      .map((p) => p.payload)
+      .find((p) => p.type === 'sales_client_indecision');
+    expect(indecision).toBeDefined();
+  });
+
+  test('does not publish when none of the 3 rules trigger (no metrics > 0.6, no stalling+intensity in 20s)', () => {
     process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
 
     const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
@@ -222,17 +335,16 @@ describe('sales_client_indecision (contract)', () => {
       analysis: {
         sales_category: 'objection_soft',
         sales_category_confidence: 0.9,
+        sales_category_intensity: 0.3,
         sales_category_flags: {
           indecision_detected: true,
           decision_postponement_signal: true,
           conditional_language_signal: true,
         },
-        sales_category_aggregated: {
-          dominant_category: 'stalling',
-          chunks_with_category: 0,
-          total_chunks: 0,
-          stability: 0.0,
-          category_distribution: { stalling: 0.0, objection_soft: 0.0 },
+        indecision_metrics: {
+          indecision_score: 0.4,
+          postponement_likelihood: 0.4,
+          conditional_language_score: 0.4,
         },
       },
     });
