@@ -575,7 +575,7 @@ export class FeedbackAggregatorService {
     }
 
     let salesTextAnalysisFeedback = runTextAnalysisPipeline(state, ctx);
-    // Opcional: só publicar feedback de indecisão quando origem for buffer (evita egress amplificar disparos).
+    // Optional: only publish indecision feedback when source is buffer (avoids egress amplifying firing).
     const indecisionSourceOnly = process.env.SALES_CLIENT_INDECISION_SOURCE_ONLY || '';
     if (
       salesTextAnalysisFeedback?.type === 'sales_client_indecision' &&
@@ -588,16 +588,39 @@ export class FeedbackAggregatorService {
         participantId: evt.participantId,
       });
     }
+    // Optional: only publish solution-understood feedback when source is buffer (same pattern as indecision).
+    const solutionUnderstoodSourceOnly = process.env.SALES_SOLUTION_UNDERSTOOD_SOURCE_ONLY || '';
+    if (
+      salesTextAnalysisFeedback?.type === 'sales_solution_understood' &&
+      solutionUnderstoodSourceOnly === 'buffer' &&
+      evt.source === 'egress'
+    ) {
+      salesTextAnalysisFeedback = null;
+      this.logger.debug('🔇 [SOLUTION_UNDERSTOOD_SOURCE] Dropping solution-understood feedback from egress (SALES_SOLUTION_UNDERSTOOD_SOURCE_ONLY=buffer)', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+      });
+    }
     if (salesTextAnalysisFeedback) {
       this.delivery.publishToHosts(evt.meetingId, salesTextAnalysisFeedback);
-      // Defense-in-depth: set indecision cooldown at aggregator so it is visible before next event is processed.
-      // Use Date.now() (server time) so cooldown is robust to evt.timestamp skew (client/Redis).
-      const raw = process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS;
-      const indecisionCooldownMs = raw ? Math.max(0, Number.parseInt(raw, 10)) : 120_000;
-      if (Number.isFinite(indecisionCooldownMs) && indecisionCooldownMs > 0) {
-        const serverNow = Date.now();
-        state.cooldownUntilByType.set('sales_client_indecision', serverNow + indecisionCooldownMs);
-        state.lastFeedbackAt = serverNow;
+      const serverNow = Date.now();
+      // Defense-in-depth: set indecision cooldown at aggregator (server time).
+      if (salesTextAnalysisFeedback.type === 'sales_client_indecision') {
+        const raw = process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS;
+        const indecisionCooldownMs = raw ? Math.max(0, Number.parseInt(raw, 10)) : 120_000;
+        if (Number.isFinite(indecisionCooldownMs) && indecisionCooldownMs > 0) {
+          state.cooldownUntilByType.set('sales_client_indecision', serverNow + indecisionCooldownMs);
+          state.lastFeedbackAt = serverNow;
+        }
+      }
+      // Defense-in-depth: set solution-understood cooldown at aggregator (server time).
+      if (salesTextAnalysisFeedback.type === 'sales_solution_understood') {
+        const raw = process.env.SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS;
+        const solutionCooldownMs = raw ? Math.max(0, Number.parseInt(raw, 10)) : 120_000;
+        if (Number.isFinite(solutionCooldownMs) && solutionCooldownMs > 0) {
+          state.cooldownUntilByType.set('sales_solution_understood', serverNow + solutionCooldownMs);
+          state.lastFeedbackAt = serverNow;
+        }
       }
     }
 

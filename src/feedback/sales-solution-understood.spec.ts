@@ -20,7 +20,7 @@ describe('sales_solution_understood (contract)', () => {
     process.env = originalEnv;
   });
 
-  test('publishes sales_solution_understood when guest reformulates a recent host explanation', () => {
+  test('publishes sales_solution_understood when guest reformulates a recent host explanation', async () => {
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
 
     const meetingId = 'meeting-solution-1';
@@ -52,8 +52,8 @@ describe('sales_solution_understood (contract)', () => {
       },
     });
 
-    svc.handleTextAnalysis(hostEvt);
-    svc.handleTextAnalysis(guestEvt);
+    await svc.handleTextAnalysis(hostEvt);
+    await svc.handleTextAnalysis(guestEvt);
 
     const solutionEvents = delivery.published
       .map((p) => p.payload)
@@ -66,13 +66,13 @@ describe('sales_solution_understood (contract)', () => {
     expect((solutionEvents[0].metadata?.markers_detected ?? []).length).toBeGreaterThan(0);
   });
 
-  test('does not publish sales_solution_understood without any prior host context', () => {
+  test('does not publish sales_solution_understood without any prior host context', async () => {
     const { svc, delivery } = createAggregatorHarness({ 'guest-1': 'guest' });
 
     const meetingId = 'meeting-solution-no-context';
     const now = 1_700_000_350_000;
 
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'guest-1',
@@ -91,13 +91,13 @@ describe('sales_solution_understood (contract)', () => {
     expect(triggered).toBe(false);
   });
 
-  test('does not publish sales_solution_understood without reformulation markers', () => {
+  test('does not publish sales_solution_understood without reformulation markers', async () => {
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
 
     const meetingId = 'meeting-solution-2';
     const now = 1_700_000_400_000;
 
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'host-1',
@@ -112,7 +112,7 @@ describe('sales_solution_understood (contract)', () => {
       }),
     );
 
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'guest-1',
@@ -131,14 +131,14 @@ describe('sales_solution_understood (contract)', () => {
     expect(triggered).toBe(false);
   });
 
-  test('does not publish sales_solution_understood for host turn (even with markers)', () => {
+  test('does not publish sales_solution_understood for host turn (even with markers)', async () => {
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host' });
 
     const meetingId = 'meeting-solution-host-skip';
     const now = 1_700_000_450_000;
 
     // Host speaks with markers (should be ignored by detector)
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'host-1',
@@ -157,13 +157,13 @@ describe('sales_solution_understood (contract)', () => {
     expect(triggered).toBe(false);
   });
 
-  test('does not publish sales_solution_understood when semantic similarity is too low', () => {
+  test('does not publish sales_solution_understood when semantic similarity is too low', async () => {
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
 
     const meetingId = 'meeting-solution-low-sim';
     const now = 1_700_000_460_000;
 
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'host-1',
@@ -179,7 +179,7 @@ describe('sales_solution_understood (contract)', () => {
     );
 
     // Orthogonal embedding => similarity ~0
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'guest-1',
@@ -198,13 +198,13 @@ describe('sales_solution_understood (contract)', () => {
     expect(triggered).toBe(false);
   });
 
-  test('blocks when keyword overlap is zero and similarityRaw is below 0.72', () => {
+  test('blocks when keyword overlap is zero and similarityRaw is below 0.72', async () => {
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
 
     const meetingId = 'meeting-solution-zero-overlap-block';
     const now = 1_700_000_470_000;
 
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'host-1',
@@ -219,8 +219,8 @@ describe('sales_solution_understood (contract)', () => {
       }),
     );
 
-    // similarityRaw ~= 0.71 (passes 0.6 gate, but should fail mitigation gate when overlap=0)
-    svc.handleTextAnalysis(
+    // similarityRaw ~= 0.71 (passes Rule 2 min 0.65, but Rule 3 fails when overlap=0 and similarity < 0.72)
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'guest-1',
@@ -239,7 +239,7 @@ describe('sales_solution_understood (contract)', () => {
     expect(triggered).toBe(false);
   });
 
-  test('respects threshold from env (can block even when gates pass)', () => {
+  test('respects threshold from env (can block even when gates pass)', async () => {
     process.env.SALES_SOLUTION_UNDERSTOOD_THRESHOLD = '0.9';
 
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
@@ -247,7 +247,7 @@ describe('sales_solution_understood (contract)', () => {
     const meetingId = 'meeting-solution-threshold-block';
     const now = 1_700_000_480_000;
 
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'host-1',
@@ -262,19 +262,19 @@ describe('sales_solution_understood (contract)', () => {
       }),
     );
 
-    // Single marker + zero overlap (but similarity is high enough to bypass overlap mitigation).
-    // This should typically produce a confidence below 0.9 → blocked by threshold.
-    svc.handleTextAnalysis(
+    // With Option A (confidence = similarityRaw): guest embedding chosen so cosine sim with host [1,0] ≈ 0.8 (< 0.9 threshold).
+    // [0.8, 0.6] normalized: cos([1,0], [0.8,0.6]) = 0.8/sqrt(0.64+0.36) = 0.8 → blocked by threshold 0.9.
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'guest-1',
         timestamp: now + 1000,
-        text: 'Ou seja, vocês conseguem ajudar no meu caso, certo?',
-        embedding: [0.99, 0.01],
+        text: 'Ou seja, se eu entendi, então vocês integram e automatizam pra reduzir o trabalho.',
+        embedding: [0.8, 0.6],
         analysis: {
-          keywords: ['ajudar'], // no overlap with host keywords
+          keywords: ['integra', 'automatiza', 'reduz'],
           sales_category: 'information_gathering',
-          speech_act: 'ask_info', // weaker than confirmation/agreement
+          speech_act: 'confirmation',
         },
       }),
     );
@@ -283,7 +283,7 @@ describe('sales_solution_understood (contract)', () => {
     expect(triggered).toBe(false);
   });
 
-  test('does not publish when context is older than SALES_SOLUTION_CONTEXT_WINDOW_MS', () => {
+  test('does not publish when context is older than SALES_SOLUTION_CONTEXT_WINDOW_MS', async () => {
     process.env.SALES_SOLUTION_CONTEXT_WINDOW_MS = '10000';
 
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
@@ -291,7 +291,7 @@ describe('sales_solution_understood (contract)', () => {
     const meetingId = 'meeting-solution-window-expired';
     const now = 1_700_000_490_000;
 
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'host-1',
@@ -307,7 +307,7 @@ describe('sales_solution_understood (contract)', () => {
     );
 
     // After 11s, the 10s window no longer includes the host context
-    svc.handleTextAnalysis(
+    await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
         participantId: 'guest-1',
@@ -326,7 +326,7 @@ describe('sales_solution_understood (contract)', () => {
     expect(triggered).toBe(false);
   });
 
-  test('respects cooldown when enabled', () => {
+  test('respects cooldown when enabled', async () => {
     process.env.SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS = '60000';
 
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
@@ -347,11 +347,12 @@ describe('sales_solution_understood (contract)', () => {
       },
     });
 
-    const makeGuestEvt = (ts: number) =>
+    // Second guest event uses different text so aggregator same-segment dedupe does not skip it; cooldown should block.
+    const makeGuestEvt1 = () =>
       makeTextAnalysisResult({
         meetingId,
         participantId: 'guest-1',
-        timestamp: ts,
+        timestamp: now + 1000,
         text: 'Ou seja, se eu entendi, então vocês integram e automatizam pra reduzir o trabalho.',
         embedding: [0.99, 0.01],
         analysis: {
@@ -360,10 +361,23 @@ describe('sales_solution_understood (contract)', () => {
           speech_act: 'confirmation',
         },
       });
+    const makeGuestEvt2 = () =>
+      makeTextAnalysisResult({
+        meetingId,
+        participantId: 'guest-1',
+        timestamp: now + 2000,
+        text: 'Então basicamente a solução ajuda a integrar e automatizar para reduzir o trabalho manual.',
+        embedding: [0.99, 0.01],
+        analysis: {
+          keywords: ['integra', 'automatiza', 'reduz'],
+          sales_category: 'information_gathering',
+          speech_act: 'confirmation',
+        },
+      });
 
-    svc.handleTextAnalysis(hostEvt);
-    svc.handleTextAnalysis(makeGuestEvt(now + 1000));
-    svc.handleTextAnalysis(makeGuestEvt(now + 2000));
+    await svc.handleTextAnalysis(hostEvt);
+    await svc.handleTextAnalysis(makeGuestEvt1());
+    await svc.handleTextAnalysis(makeGuestEvt2());
 
     const count = delivery.published.filter((p) => p.payload.type === 'sales_solution_understood')
       .length;

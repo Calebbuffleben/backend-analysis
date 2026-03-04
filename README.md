@@ -92,12 +92,14 @@ O backend depende de um arquivo `.env` com credenciais de banco, LiveKit e integ
 ### Detecção: “Solução foi compreendida” (teach-back / reformulação)
 
 - **`SALES_SOLUTION_UNDERSTOOD_ENABLED`**: `true|false` (default: `false`)
-- **`SALES_SOLUTION_UNDERSTOOD_DEBUG`**: `true|false` (default: `false`) — logs de gating/similarity/confidence
-- **`SALES_SOLUTION_UNDERSTOOD_THRESHOLD`**: `0..1` (default: `0.70`)
-- **`SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS`**: ms (default: `120000`, `0` desabilita cooldown)
+- **`SALES_SOLUTION_UNDERSTOOD_DEBUG`**: `true|false` (default: `false`) — logs de gating/regras
+- **`SALES_SOLUTION_UNDERSTOOD_THRESHOLD`**: `0..1` — limite mínimo de confidence (default: igual a MIN_SIMILARITY). Confidence = similaridade bruta (Option A).
+- **`SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY`**: `0..1` (default: `0.65`) — Regra 2: similaridade cosseno mínima (cliente vs centroide host).
+- **`SALES_SOLUTION_UNDERSTOOD_NO_OVERLAP_MIN_SIMILARITY`**: `0..1` (default: `0.72`) — Regra 3: quando overlap de keywords = 0, exige similaridade >= este valor.
+- **`SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS`**: ms (default: `120000`). **`0` desativa o cooldown** — não recomendado em produção. Cooldown usa relógio do servidor (Date.now()).
+- **`SALES_SOLUTION_UNDERSTOOD_SOURCE_ONLY`**: opcional. Se `buffer`, feedback só para eventos `source: 'buffer'`; `egress` descartado. Vazio = ambas as origens.
 - **`SALES_SOLUTION_UNDERSTOOD_MIN_REFORMULATION_CHARS`**: int (default: `40`)
 - **`SALES_SOLUTION_CONTEXT_WINDOW_MS`**: ms (default: `90000`)
-- **`SALES_SOLUTION_CONTEXT_MAX_ENTRIES`**: int (default: `12`)
 
 ### Detecção: Indecisão do cliente (`sales_client_indecision`)
 

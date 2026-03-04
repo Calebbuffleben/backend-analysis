@@ -11,6 +11,15 @@ type MeetingMaps = {
   participantToName: Map<string, string>;
 };
 
+/** Rule 2: minimum cosine similarity (client embedding vs host centroid). Env: SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY */
+const DEFAULT_MIN_SIMILARITY = 0.65;
+/** Rule 3: when keyword overlap is 0, require similarity >= this. Env: SALES_SOLUTION_UNDERSTOOD_NO_OVERLAP_MIN_SIMILARITY */
+const DEFAULT_NO_OVERLAP_MIN_SIMILARITY = 0.72;
+/** Minimum client text length (chars). Env: SALES_SOLUTION_UNDERSTOOD_MIN_REFORMULATION_CHARS */
+const DEFAULT_MIN_REFORMULATION_CHARS = 40;
+/** Same-segment suppression window (ms); no repeat feedback for similar text within this. */
+const SAME_SEGMENT_WINDOW_MS = 60_000;
+
 export class DetectSolutionUnderstood {
   private readonly logger = new Logger(DetectSolutionUnderstood.name);
   private readonly byMeeting = new Map<string, MeetingMaps>();
@@ -26,7 +35,9 @@ export class DetectSolutionUnderstood {
     const participantId = ctx.participantId;
     const now = ctx.now;
 
-    this.logger.log(`🟢 [SOLUTION_UNDERSTOOD] Detector called for ${meetingId}/${participantId}`);
+    if (this.envBool('SALES_SOLUTION_UNDERSTOOD_DEBUG', false)) {
+      this.logger.debug(`[SOLUTION_UNDERSTOOD] Detector called for ${meetingId}/${participantId}`);
+    }
 
     // Snapshot de nome/role do participante atual (usado para ignorar host e preencher payload).
     const participantName = ctx.getParticipantName(meetingId, participantId);
@@ -64,6 +75,11 @@ export class DetectSolutionUnderstood {
     return feedback;
   }
 
+  /**
+   * Detects when the client has reformulated the solution (teach-back), indicating understanding.
+   * Simplified to three explicit rules (align with indecision pattern); confidence = similarityRaw (Option A).
+   * Rules: (1) reformulation markers present, (2) semantic similarity >= MIN_SIMILARITY, (3) keyword overlap >= 1 or similarity >= NO_OVERLAP_MIN_SIMILARITY.
+   */
   private detectClientSolutionUnderstood(
     state: ParticipantState,
     evt: TextAnalysisResult,
@@ -74,139 +90,122 @@ export class DetectSolutionUnderstood {
     if (!enabled) return null;
     const debug = this.envBool('SALES_SOLUTION_UNDERSTOOD_DEBUG', false);
 
-    // Apenas avaliar se houver embedding e texto
+    // Gates: text and embedding required
     const text = (evt.text || '').trim();
     const embedding = evt.analysis.embedding;
     if (!text || !Array.isArray(embedding) || embedding.length === 0) {
-      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] Missing text or embedding - text: ${!!text}, embedding: ${Array.isArray(embedding) ? embedding.length : 'not array'}`);
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Missing text or embedding');
       return null;
     }
 
-    // Evitar disparar no próprio host (quando roles existem)
-    // Para "unknown", assumimos que pode ser guest e processamos (mais permissivo)
     const role = this.getParticipantRole(evt.meetingId, evt.participantId);
-    if (debug) {
-      this.logger.debug('🔍 [SOLUTION_UNDERSTOOD] Checking client reformulation', {
-        meetingId: evt.meetingId,
-        participantId: evt.participantId,
-        role,
-        textPreview: text.slice(0, 80),
-        textLength: text.length,
-      });
-    }
-    // Apenas pular se for explicitamente host
     if (role === 'host') {
-      if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Skipping host turn');
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skipping host turn');
       return null;
     }
 
-    // Cooldown (por participante)
+    // Cooldown (server time, align with indecision)
     const cooldownRaw = process.env.SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS;
     const cooldownParsed = cooldownRaw ? Number.parseInt(cooldownRaw.replace(/"/g, ''), 10) : 120000;
     const effectiveCooldownMs = Number.isFinite(cooldownParsed) ? Math.max(0, cooldownParsed) : 120000;
-    if (effectiveCooldownMs > 0 && this.inCooldown(state, 'sales_solution_understood', now)) {
-      if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] In cooldown');
+    if (effectiveCooldownMs > 0 && this.inCooldown(state, 'sales_solution_understood', Date.now())) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] In cooldown');
       return null;
     }
 
+    // Same-segment suppression (60s): do not repeat for similar text within window (ADR-0004 style)
+    const timeSinceLastTextFeedback = typeof state.lastFeedbackTextAt === 'number'
+      ? now - state.lastFeedbackTextAt
+      : Infinity;
+    if (
+      timeSinceLastTextFeedback < SAME_SEGMENT_WINDOW_MS &&
+      state.lastFeedbackText &&
+      this.textSimilar(state.lastFeedbackText, evt.text ?? '', 0.6)
+    ) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Same segment — skipping');
+      return null;
+    }
+
+    // Rule 1 — Reformulation markers: at least one phrase from the fixed list
     const markers = this.detectReformulationMarkers(text);
     if (markers.length === 0) {
-      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] No reformulation markers - text: "${text.slice(0, 100)}..."`);
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] No reformulation markers');
       return null;
     }
-    this.logger.log(`✅ [SOLUTION_UNDERSTOOD] Reformulation markers found: ${markers.join(', ')}`);
 
-    if (debug) {
-      this.logger.debug('✅ [SOLUTION_UNDERSTOOD] Reformulation markers found', {
-        markers,
-        count: markers.length,
-        textPreview: text.slice(0, 100),
-      });
-    }
-
+    // Gate: minimum text length
     const minCharsRaw = process.env.SALES_SOLUTION_UNDERSTOOD_MIN_REFORMULATION_CHARS;
-    const minCharsParsed = minCharsRaw ? Number.parseInt(minCharsRaw.replace(/"/g, ''), 10) : 40;
-    const minChars = Number.isFinite(minCharsParsed) ? Math.max(10, minCharsParsed) : 40;
+    const minCharsParsed = minCharsRaw ? Number.parseInt(minCharsRaw.replace(/"/g, ''), 10) : DEFAULT_MIN_REFORMULATION_CHARS;
+    const minChars = Number.isFinite(minCharsParsed) ? Math.max(10, minCharsParsed) : DEFAULT_MIN_REFORMULATION_CHARS;
     if (text.length < minChars) {
-      if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Text too short', { len: text.length, minChars });
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Text too short', { len: text.length, minChars });
       return null;
     }
 
+    // Gate: host context required
     const contextEntries = this.getHostTextHistoryForComparison(evt.meetingId, evt.participantId, now, ctx);
     if (contextEntries.length === 0) {
-      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] No host text history available for ${evt.meetingId}/${evt.participantId}`);
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] No host text history');
       return null;
     }
-    this.logger.log(`✅ [SOLUTION_UNDERSTOOD] Host context available - ${contextEntries.length} entries from ${[...new Set(contextEntries.map(e => e.participantId))].join(', ')}`);
-
 
     const centroid = this.meanEmbedding(contextEntries.map((e) => e.embedding));
     if (!centroid) {
-      if (debug) this.logger.debug('❌ [SOLUTION_UNDERSTOOD] Failed to build centroid');
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Failed to build centroid');
       return null;
     }
 
     const similarityRaw = this.cosineSimilarity(embedding, centroid);
-    // Safety: se não parece relacionado, não adianta continuar
-    if (similarityRaw < 0.6) {
-      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] Similarity too low: ${(similarityRaw * 100).toFixed(1)}% (min: 60%)`);
+
+    // Rule 2 — Semantic similarity: client vs host centroid >= MIN_SIMILARITY
+    const minSimRaw = process.env.SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY;
+    const minSimParsed = minSimRaw ? Number.parseFloat(minSimRaw.replace(/"/g, '')) : DEFAULT_MIN_SIMILARITY;
+    const minSimilarity = Number.isFinite(minSimParsed) ? this.clamp01(minSimParsed) : DEFAULT_MIN_SIMILARITY;
+    if (similarityRaw < minSimilarity) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Similarity below min', { similarityRaw, minSimilarity });
       return null;
     }
-    this.logger.log(`✅ [SOLUTION_UNDERSTOOD] Similarity OK: ${(similarityRaw * 100).toFixed(1)}%`);
-
-    const similarityScore = this.clamp01((similarityRaw - 0.55) / 0.25);
-    const markerScore = this.clamp01(markers.length / 2);
 
     const clientKeywords = evt.analysis.keywords ?? [];
     const contextKeywords = this.collectKeywordsFromEntries(contextEntries);
     const keywordOverlap = this.keywordOverlapCount(clientKeywords, contextKeywords);
-    const keywordOverlapScore = this.clamp01(keywordOverlap / 3);
-    // Mitigação de falso positivo: se não há overlap nenhum, exigir similarity bem alta
-    if (keywordOverlap === 0 && similarityRaw < 0.72) {
-      if (debug)
-        this.logger.debug('❌ [SOLUTION_UNDERSTOOD] No keyword overlap and similarity < 0.72', {
-          similarityRaw,
-          keywordOverlap,
-        });
+
+    // Rule 3 — Relevance: keyword overlap >= 1 OR similarity >= NO_OVERLAP_MIN_SIMILARITY
+    const noOverlapMinRaw = process.env.SALES_SOLUTION_UNDERSTOOD_NO_OVERLAP_MIN_SIMILARITY;
+    const noOverlapMinParsed = noOverlapMinRaw ? Number.parseFloat(noOverlapMinRaw.replace(/"/g, '')) : DEFAULT_NO_OVERLAP_MIN_SIMILARITY;
+    const noOverlapMinSim = Number.isFinite(noOverlapMinParsed) ? this.clamp01(noOverlapMinParsed) : DEFAULT_NO_OVERLAP_MIN_SIMILARITY;
+    const rule3Pass = keywordOverlap >= 1 || similarityRaw >= noOverlapMinSim;
+    if (!rule3Pass) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Rule 3 failed: no keyword overlap and similarity < noOverlapMin', {
+        keywordOverlap,
+        similarityRaw,
+        noOverlapMinSim,
+      });
       return null;
     }
 
-    const speechAct = evt.analysis.speech_act;
-    const speechActScore =
-      speechAct === 'agreement' || speechAct === 'confirmation'
-        ? 1.0
-        : speechAct === 'ask_info'
-          ? 0.5
-          : 0.0;
+    // Option A: confidence = similarityRaw (similarity as the main signal)
+    const confidence = similarityRaw;
 
-    const confidence =
-      similarityScore * 0.50 +
-      markerScore * 0.25 +
-      keywordOverlapScore * 0.15 +
-      speechActScore * 0.10;
-
+    // Optional extra threshold on confidence (env can raise bar above MIN_SIMILARITY)
     const thresholdRaw = process.env.SALES_SOLUTION_UNDERSTOOD_THRESHOLD;
-    const thresholdParsed = thresholdRaw ? Number.parseFloat(thresholdRaw.replace(/"/g, '')) : 0.7;
-    const threshold = Number.isFinite(thresholdParsed) ? this.clamp01(thresholdParsed) : 0.7;
-    
-    this.logger.log(`📊 [SOLUTION_UNDERSTOOD] Confidence: ${(confidence * 100).toFixed(1)}% (threshold: ${(threshold * 100).toFixed(0)}%) - similarity: ${(similarityScore * 100).toFixed(1)}%, markers: ${(markerScore * 100).toFixed(1)}%, keywords: ${(keywordOverlapScore * 100).toFixed(1)}%, speech: ${(speechActScore * 100).toFixed(1)}%`);
-    
+    const thresholdParsed = thresholdRaw ? Number.parseFloat(thresholdRaw.replace(/"/g, '')) : minSimilarity;
+    const threshold = Number.isFinite(thresholdParsed) ? this.clamp01(thresholdParsed) : minSimilarity;
     if (confidence < threshold) {
-      this.logger.log(`❌ [SOLUTION_UNDERSTOOD] Confidence below threshold - ${(confidence * 100).toFixed(1)}% < ${(threshold * 100).toFixed(0)}%`);
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Confidence below threshold', { confidence, threshold });
       return null;
     }
 
     if (effectiveCooldownMs > 0) {
-      this.setCooldown(state, 'sales_solution_understood', now, effectiveCooldownMs);
+      this.setCooldown(state, 'sales_solution_understood', Date.now(), effectiveCooldownMs);
     }
 
     const window = this.window(state, now, 60000);
     const bestContext = contextEntries.length > 0 ? contextEntries[contextEntries.length - 1] : null;
-
     const contextExcerpt = bestContext ? this.snippet(bestContext.text, 180) : '';
     const clientExcerpt = this.snippet(text, 180);
 
-    this.logger.log(`🎯 [SOLUTION_UNDERSTOOD] ✅ FEEDBACK TRIGGERED - confidence: ${(confidence * 100).toFixed(1)}%, similarity: ${(similarityRaw * 100).toFixed(1)}%, markers: ${markers.join(', ')}`);
+    this.logger.log(`[SOLUTION_UNDERSTOOD] Feedback triggered — confidence: ${(confidence * 100).toFixed(1)}% (similarityRaw), markers: ${markers.join(', ')}`);
 
     return {
       id: this.makeId(),
@@ -228,6 +227,19 @@ export class DetectSolutionUnderstood {
         client_reformulation_excerpt: clientExcerpt,
       },
     };
+  }
+
+  /** Word-set containment similarity (>= threshold). Same algorithm as detect-client-indecision. */
+  private textSimilar(a: string, b: string, threshold = 0.6): boolean {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
+    if (wordsA.size === 0 || wordsB.size === 0) return a === b;
+    let intersection = 0;
+    for (const w of wordsA) {
+      if (wordsB.has(w)) intersection++;
+    }
+    const containment = Math.max(intersection / wordsA.size, intersection / wordsB.size);
+    return containment >= threshold;
   }
   private envBool(key: string, defaultValue: boolean): boolean {
     const raw = process.env[key];
