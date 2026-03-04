@@ -1,6 +1,8 @@
 import { TextAnalysisResult } from "@/pipeline/text-analysis.service";
 import { DetectionContext, ParticipantState } from "../types";
 import { FeedbackEventPayload } from "@/feedback/feedback.types";
+import { makeFeedbackId } from "@/feedback/utils/id";
+import { textSimilar } from "@/feedback/utils/text-similarity";
 import { Logger } from "@nestjs/common";
 
 export type ParticipantRoles = 'host' | 'guest';
@@ -92,7 +94,7 @@ export class DetectClientIndecision {
     if (
       timeSinceLastTextFeedback < SAME_SEGMENT_WINDOW_MS &&
       state.lastFeedbackText &&
-      this.textSimilar(state.lastFeedbackText, evt.text ?? '', 0.6)
+      textSimilar(state.lastFeedbackText, evt.text ?? '', 0.6)
     ) {
       return null;
     }
@@ -208,18 +210,6 @@ export class DetectClientIndecision {
     return false;
   }
 
-  private textSimilar(a: string, b: string, threshold = 0.6): boolean {
-    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
-    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
-    if (wordsA.size === 0 || wordsB.size === 0) return a === b;
-    let intersection = 0;
-    for (const w of wordsA) {
-      if (wordsB.has(w)) intersection++;
-    }
-    const containment = Math.max(intersection / wordsA.size, intersection / wordsB.size);
-    return containment >= threshold;
-  }
-
   private inCooldown(state: ParticipantState, type: string, now: number): boolean {
     const until = state.cooldownUntilByType.get(type);
     return typeof until === 'number' && until > now;
@@ -231,8 +221,7 @@ export class DetectClientIndecision {
   }
 
   private makeId(): string {
-    const rnd = Math.floor(Math.random() * 1e9).toString(36);
-    return `${Date.now().toString(36)}-${rnd}`;
+    return makeFeedbackId();
   }
 
   private window(

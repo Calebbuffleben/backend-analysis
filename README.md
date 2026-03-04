@@ -91,15 +91,15 @@ O backend depende de um arquivo `.env` com credenciais de banco, LiveKit e integ
 
 ### Detecção: “Solução foi compreendida” (teach-back / reformulação)
 
+Regra única: marcador de reformulação + similaridade (embedding atual vs. centróide da última fala de cada outro participante) ≥ MIN_SIMILARITY. Confidence = similaridade bruta.
+
 - **`SALES_SOLUTION_UNDERSTOOD_ENABLED`**: `true|false` (default: `false`)
-- **`SALES_SOLUTION_UNDERSTOOD_DEBUG`**: `true|false` (default: `false`) — logs de gating/regras
-- **`SALES_SOLUTION_UNDERSTOOD_THRESHOLD`**: `0..1` — limite mínimo de confidence (default: igual a MIN_SIMILARITY). Confidence = similaridade bruta (Option A).
-- **`SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY`**: `0..1` (default: `0.65`) — Regra 2: similaridade cosseno mínima (cliente vs centroide host).
-- **`SALES_SOLUTION_UNDERSTOOD_NO_OVERLAP_MIN_SIMILARITY`**: `0..1` (default: `0.72`) — Regra 3: quando overlap de keywords = 0, exige similaridade >= este valor.
-- **`SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS`**: ms (default: `120000`). **`0` desativa o cooldown** — não recomendado em produção. Cooldown usa relógio do servidor (Date.now()).
+- **`SALES_SOLUTION_UNDERSTOOD_DEBUG`**: `true|false` (default: `false`) — logs de Evaluate/Return null só quando `true`; Triggered sempre.
+- **`SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY`**: `0..1` (default: `0.65`) — similaridade cosseno mínima (falante vs. centróide dos outros).
+- **`SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS`**: ms (default: `120000`). **`0` desativa o cooldown** — não recomendado em produção.
+- **`SALES_SOLUTION_CONTEXT_WINDOW_MS`**: ms (default: `90000`) — janela para buscar a última fala de cada outro participante.
 - **`SALES_SOLUTION_UNDERSTOOD_SOURCE_ONLY`**: opcional. Se `buffer`, feedback só para eventos `source: 'buffer'`; `egress` descartado. Vazio = ambas as origens.
-- **`SALES_SOLUTION_UNDERSTOOD_MIN_REFORMULATION_CHARS`**: int (default: `40`)
-- **`SALES_SOLUTION_CONTEXT_WINDOW_MS`**: ms (default: `90000`)
+- Tamanho mínimo do texto: 20 caracteres (hardcoded; sem env).
 
 ### Detecção: Indecisão do cliente (`sales_client_indecision`)
 

@@ -7,6 +7,9 @@ import { runA2E2Pipeline } from './a2e2/pipeline/run-a2e2-pipeline';
 import { runTextAnalysisPipeline } from './a2e2/pipeline/run-text-analysis-pipeline';
 import { TextAnalysisResult } from '../pipeline/text-analysis.service';
 import type { DetectionContext, TextHistoryEntry } from './a2e2/types';
+import { makeFeedbackId } from './utils/id';
+import { truncateWithEllipsis } from './utils/snippet';
+import { textSimilar } from './utils/text-similarity';
 
 type Sample = {
   ts: number;
@@ -546,7 +549,7 @@ export class FeedbackAggregatorService {
       : Infinity;
     const lastText = (state.lastFeedbackText ?? '').trim();
     const currentText = (evt.text ?? '').trim();
-    const isSameSegmentBySimilarity = lastText && currentText && this.textSimilar(state.lastFeedbackText!, evt.text);
+    const isSameSegmentBySimilarity = lastText && currentText && textSimilar(state.lastFeedbackText!, evt.text);
     const isSameSegmentByContainment =
       lastText && currentText && currentText.toLowerCase().includes(lastText.toLowerCase());
     if (
@@ -2162,18 +2165,6 @@ export class FeedbackAggregatorService {
     return typeof state.lastFeedbackAt === 'number' && now - state.lastFeedbackAt < minGapMs;
   }
 
-  private textSimilar(a: string, b: string, threshold = 0.6): boolean {
-    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
-    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
-    if (wordsA.size === 0 || wordsB.size === 0) return a === b;
-    let intersection = 0;
-    for (const w of wordsA) {
-      if (wordsB.has(w)) intersection++;
-    }
-    const containment = Math.max(intersection / wordsA.size, intersection / wordsB.size);
-    return containment >= threshold;
-  }
-
   private initState(): ParticipantState {
     return {
       samples: [],
@@ -2189,8 +2180,7 @@ export class FeedbackAggregatorService {
   }
 
   private makeId(): string {
-    const rnd = Math.floor(Math.random() * 1e9).toString(36);
-    return `${Date.now().toString(36)}-${rnd}`;
+    return makeFeedbackId();
   }
 
   // ========================================================================
@@ -2831,8 +2821,7 @@ export class FeedbackAggregatorService {
       const current = (evt.text || '').trim();
       if (current) {
         const maxLen = 180;
-        const snippet = current.length > maxLen ? `${current.slice(0, maxLen - 3)}...` : current;
-        representativePhrases = [snippet];
+        representativePhrases = [truncateWithEllipsis(current, maxLen)];
       }
     }
     
@@ -2947,24 +2936,6 @@ export class FeedbackAggregatorService {
   // pipeline A2E2 via DetectSolutionUnderstood (detect-solution-understood.ts).
   // A implementação anterior neste arquivo foi removida para evitar duplicação
   // e usar a nova arquitetura baseada em textHistory.
-
-  /** @deprecated LEGACY — only used by the old inline detectClientIndecision. Not called anywhere. Safe to remove. */
-  private snippet(text: string, maxLen: number): string {
-    const t = (text || '').trim();
-    if (!t) return '';
-    if (t.length <= maxLen) return t;
-    return `${t.slice(0, Math.max(0, maxLen - 3))}...`;
-  }
-
-  /** @deprecated LEGACY — only used by the old inline detectClientIndecision. Not called anywhere. Safe to remove. */
-  private envBool(key: string, defaultValue: boolean): boolean {
-    const raw = process.env[key];
-    if (raw === undefined || raw === null) return defaultValue;
-    const v = raw.replace(/"/g, '').trim().toLowerCase();
-    if (v === 'true' || v === '1' || v === 'yes' || v === 'y' || v === 'on') return true;
-    if (v === 'false' || v === '0' || v === 'no' || v === 'n' || v === 'off') return false;
-    return defaultValue;
-  }
 
   private participantsForMeeting(meetingId: string): Array<[string, ParticipantState]> {
     const out: Array<[string, ParticipantState]> = [];

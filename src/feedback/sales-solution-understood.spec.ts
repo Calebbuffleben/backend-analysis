@@ -7,12 +7,8 @@ describe('sales_solution_understood (contract)', () => {
     process.env = { ...originalEnv };
     process.env.SALES_SOLUTION_UNDERSTOOD_ENABLED = 'true';
     process.env.SALES_SOLUTION_UNDERSTOOD_DEBUG = 'false';
-    process.env.SALES_SOLUTION_UNDERSTOOD_THRESHOLD = '0.6';
-    process.env.SALES_SOLUTION_UNDERSTOOD_MIN_REFORMULATION_CHARS = '10';
     process.env.SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS = '0';
     process.env.SALES_SOLUTION_CONTEXT_WINDOW_MS = '90000';
-    process.env.SALES_SOLUTION_CONTEXT_MAX_ENTRIES = '12';
-    // Ensure indecision cooldown doesn't affect these tests (indecision detector always runs).
     process.env.SALES_CLIENT_INDECISION_COOLDOWN_MS = '0';
   });
 
@@ -198,53 +194,12 @@ describe('sales_solution_understood (contract)', () => {
     expect(triggered).toBe(false);
   });
 
-  test('blocks when keyword overlap is zero and similarityRaw is below 0.72', async () => {
-    const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
-
-    const meetingId = 'meeting-solution-zero-overlap-block';
-    const now = 1_700_000_470_000;
-
-    await svc.handleTextAnalysis(
-      makeTextAnalysisResult({
-        meetingId,
-        participantId: 'host-1',
-        timestamp: now,
-        text: 'Funciona assim: a gente integra X e automatiza Y; você consegue reduzir Z.',
-        embedding: [1, 0],
-        analysis: {
-          keywords: ['integra', 'automatiza', 'reduz'],
-          sales_category: 'value_exploration',
-          speech_act: 'statement',
-        },
-      }),
-    );
-
-    // similarityRaw ~= 0.71 (passes Rule 2 min 0.65, but Rule 3 fails when overlap=0 and similarity < 0.72)
-    await svc.handleTextAnalysis(
-      makeTextAnalysisResult({
-        meetingId,
-        participantId: 'guest-1',
-        timestamp: now + 1000,
-        text: 'Ou seja, se eu entendi, então vocês fazem um processo parecido.',
-        embedding: [0.71, 0.704],
-        analysis: {
-          keywords: ['parecido'], // no overlap with host keywords
-          sales_category: 'information_gathering',
-          speech_act: 'confirmation',
-        },
-      }),
-    );
-
-    const triggered = delivery.published.some((p) => p.payload.type === 'sales_solution_understood');
-    expect(triggered).toBe(false);
-  });
-
-  test('respects threshold from env (can block even when gates pass)', async () => {
-    process.env.SALES_SOLUTION_UNDERSTOOD_THRESHOLD = '0.9';
+  test('respects MIN_SIMILARITY from env (blocks when similarity below env min)', async () => {
+    process.env.SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY = '0.9';
 
     const { svc, delivery } = createAggregatorHarness({ 'host-1': 'host', 'guest-1': 'guest' });
 
-    const meetingId = 'meeting-solution-threshold-block';
+    const meetingId = 'meeting-solution-min-sim-block';
     const now = 1_700_000_480_000;
 
     await svc.handleTextAnalysis(
@@ -262,8 +217,7 @@ describe('sales_solution_understood (contract)', () => {
       }),
     );
 
-    // With Option A (confidence = similarityRaw): guest embedding chosen so cosine sim with host [1,0] ≈ 0.8 (< 0.9 threshold).
-    // [0.8, 0.6] normalized: cos([1,0], [0.8,0.6]) = 0.8/sqrt(0.64+0.36) = 0.8 → blocked by threshold 0.9.
+    // Guest embedding [0.8, 0.6] => cos with [1,0] = 0.8 → below MIN_SIMILARITY 0.9.
     await svc.handleTextAnalysis(
       makeTextAnalysisResult({
         meetingId,
