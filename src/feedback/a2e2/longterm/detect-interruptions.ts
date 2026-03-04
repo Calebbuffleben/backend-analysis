@@ -57,6 +57,23 @@ export function detectInterruptions(
         arr.shift();
       }
       ctx.updateOverlapHistory?.(meetingId, arr);
+
+      // Candidato a pós-interrupção: último falante foi “interrompido” por outro
+      const lastSpeaker = ctx.getLastSpeaker?.(meetingId);
+      if (lastSpeaker) {
+        const someoneElseSpeaking = covers.some((c) => c.id !== lastSpeaker && c.coverage >= 0.2);
+        if (someoneElseSpeaking) {
+          const st = ctx.getParticipantState?.(meetingId, lastSpeaker);
+          const prev = ctx.getPostInterruptionCandidates?.(meetingId) ?? [];
+          const next = [...prev, {
+            ts: now,
+            interruptedId: lastSpeaker,
+            valenceBefore: typeof st?.ema?.valence === 'number' ? st.ema.valence : undefined,
+          }];
+          if (next.length > 10) next.splice(0, next.length - 10);
+          ctx.updatePostInterruptionCandidates?.(meetingId, next);
+        }
+      }
     }
   }
 

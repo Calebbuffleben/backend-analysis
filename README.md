@@ -98,14 +98,11 @@ Regra única: marcador de reformulação + similaridade (embedding atual vs. cen
 - **`SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY`**: `0..1` (default: `0.65`) — similaridade cosseno mínima (falante vs. centróide dos outros).
 - **`SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS`**: ms (default: `120000`). **`0` desativa o cooldown** — não recomendado em produção.
 - **`SALES_SOLUTION_CONTEXT_WINDOW_MS`**: ms (default: `90000`) — janela para buscar a última fala de cada outro participante.
-- **`SALES_SOLUTION_UNDERSTOOD_SOURCE_ONLY`**: opcional. Se `buffer`, feedback só para eventos `source: 'buffer'`; `egress` descartado. Vazio = ambas as origens.
 - Tamanho mínimo do texto: 20 caracteres (hardcoded; sem env).
 
 ### Detecção: Indecisão do cliente (`sales_client_indecision`)
 
 - **`SALES_CLIENT_INDECISION_COOLDOWN_MS`**: ms (default: `120000`). Intervalo mínimo entre dois feedbacks de indecisão para o mesmo participante. **`0` desativa o cooldown** — não recomendado em produção (pode gerar disparos em “qualquer fala” após o primeiro feedback).
-- **`SALES_CLIENT_INDECISION_SOURCE_ONLY`**: opcional. Se `buffer`, feedback de indecisão é publicado apenas para eventos com `source: 'buffer'` (áudio → Whisper); eventos `source: 'egress'` (transcription_chunk/legendas) não geram feedback de indecisão. Vazio ou ausente = ambas as origens.
-
 ## Executando a aplicação
 
 ### Desenvolvimento

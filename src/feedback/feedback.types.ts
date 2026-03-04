@@ -64,12 +64,6 @@ export interface FeedbackEventPayload {
     | 'conexao'
     | 'tristeza'
     | 'estado_mental'
-    | 'sales_price_window_open'
-    | 'sales_decision_signal'
-    | 'sales_ready_to_close'
-    | 'sales_objection_escalating'
-    | 'sales_conversation_stalling'
-    | 'sales_category_transition'
     | 'sales_client_indecision'
     | 'sales_solution_understood';
   severity: FeedbackSeverity;

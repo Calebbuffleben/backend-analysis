@@ -1,5 +1,7 @@
 import { FeedbackAggregatorService } from '../feedback.aggregator.service';
 import type { FeedbackDeliveryService } from '../feedback.delivery.service';
+import { FeedbackMeetingStateService } from '../feedback-meeting-state.service';
+import { FeedbackParticipantStateService } from '../feedback-participant-state.service';
 import type { FeedbackEventPayload } from '../feedback.types';
 import type { ParticipantIndexService } from '../../livekit/participant-index.service';
 import type { TextAnalysisResult } from '../../pipeline/text-analysis.service';
@@ -33,6 +35,8 @@ export function createAggregatorHarness(rolesByParticipant: Record<string, Parti
   const svc = new FeedbackAggregatorService(
     delivery as unknown as FeedbackDeliveryService,
     indexLike as unknown as ParticipantIndexService,
+    new FeedbackMeetingStateService(),
+    new FeedbackParticipantStateService(),
   );
 
   return { svc, delivery };
