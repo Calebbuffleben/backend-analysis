@@ -90,17 +90,28 @@ export class DetectSolutionUnderstood {
     if (!enabled) return null;
     const debug = this.envBool('SALES_SOLUTION_UNDERSTOOD_DEBUG', false);
 
-    // Gates: text and embedding required
     const text = (evt.text || '').trim();
     const embedding = evt.analysis.embedding;
+    this.logger.log('[SOLUTION_UNDERSTOOD] Evaluate', {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      textLen: text.length,
+      embeddingLen: Array.isArray(embedding) ? embedding.length : 0,
+    });
+
     if (!text || !Array.isArray(embedding) || embedding.length === 0) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Missing text or embedding');
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: missing text or embedding', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        textLen: text.length,
+        embeddingLen: Array.isArray(embedding) ? embedding.length : 0,
+      });
       return null;
     }
 
     const role = this.getParticipantRole(evt.meetingId, evt.participantId);
     if (role === 'host') {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skipping host turn');
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: participant is host', { meetingId: evt.meetingId, participantId: evt.participantId });
       return null;
     }
 
@@ -109,7 +120,7 @@ export class DetectSolutionUnderstood {
     const cooldownParsed = cooldownRaw ? Number.parseInt(cooldownRaw.replace(/"/g, ''), 10) : 120000;
     const effectiveCooldownMs = Number.isFinite(cooldownParsed) ? Math.max(0, cooldownParsed) : 120000;
     if (effectiveCooldownMs > 0 && this.inCooldown(state, 'sales_solution_understood', Date.now())) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] In cooldown');
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: in cooldown', { meetingId: evt.meetingId, participantId: evt.participantId });
       return null;
     }
 
@@ -122,14 +133,22 @@ export class DetectSolutionUnderstood {
       state.lastFeedbackText &&
       this.textSimilar(state.lastFeedbackText, evt.text ?? '', 0.6)
     ) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Same segment — skipping');
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: same segment (similar text within 60s)', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        timeSinceLastMs: timeSinceLastTextFeedback,
+      });
       return null;
     }
 
     // Rule 1 — Reformulation markers: at least one phrase from the fixed list
     const markers = this.detectReformulationMarkers(text);
     if (markers.length === 0) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] No reformulation markers');
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: no reformulation markers', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        textPreview: text.slice(0, 80),
+      });
       return null;
     }
 
@@ -138,31 +157,49 @@ export class DetectSolutionUnderstood {
     const minCharsParsed = minCharsRaw ? Number.parseInt(minCharsRaw.replace(/"/g, ''), 10) : DEFAULT_MIN_REFORMULATION_CHARS;
     const minChars = Number.isFinite(minCharsParsed) ? Math.max(10, minCharsParsed) : DEFAULT_MIN_REFORMULATION_CHARS;
     if (text.length < minChars) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Text too short', { len: text.length, minChars });
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: text too short', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        len: text.length,
+        minChars,
+      });
       return null;
     }
 
-    // Gate: host context required
+    // Gate: context from other participants required
     const contextEntries = this.getHostTextHistoryForComparison(evt.meetingId, evt.participantId, now, ctx);
     if (contextEntries.length === 0) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] No host text history');
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: no context from other participants (no entries in 90s window)', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+      });
       return null;
     }
 
     const centroid = this.meanEmbedding(contextEntries.map((e) => e.embedding));
     if (!centroid) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Failed to build centroid');
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: failed to build centroid', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        contextEntriesCount: contextEntries.length,
+      });
       return null;
     }
 
     const similarityRaw = this.cosineSimilarity(embedding, centroid);
 
-    // Rule 2 — Semantic similarity: client vs host centroid >= MIN_SIMILARITY
+    // Rule 2 — Semantic similarity: client vs centroid >= MIN_SIMILARITY
     const minSimRaw = process.env.SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY;
     const minSimParsed = minSimRaw ? Number.parseFloat(minSimRaw.replace(/"/g, '')) : DEFAULT_MIN_SIMILARITY;
     const minSimilarity = Number.isFinite(minSimParsed) ? this.clamp01(minSimParsed) : DEFAULT_MIN_SIMILARITY;
     if (similarityRaw < minSimilarity) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Similarity below min', { similarityRaw, minSimilarity });
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: similarity below min (Rule 2)', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        similarityRaw: Math.round(similarityRaw * 1000) / 1000,
+        minSimilarity,
+        contextEntriesCount: contextEntries.length,
+      });
       return null;
     }
 
@@ -176,9 +213,11 @@ export class DetectSolutionUnderstood {
     const noOverlapMinSim = Number.isFinite(noOverlapMinParsed) ? this.clamp01(noOverlapMinParsed) : DEFAULT_NO_OVERLAP_MIN_SIMILARITY;
     const rule3Pass = keywordOverlap >= 1 || similarityRaw >= noOverlapMinSim;
     if (!rule3Pass) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Rule 3 failed: no keyword overlap and similarity < noOverlapMin', {
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: Rule 3 failed (keyword overlap or similarity)', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
         keywordOverlap,
-        similarityRaw,
+        similarityRaw: Math.round(similarityRaw * 1000) / 1000,
         noOverlapMinSim,
       });
       return null;
@@ -192,7 +231,12 @@ export class DetectSolutionUnderstood {
     const thresholdParsed = thresholdRaw ? Number.parseFloat(thresholdRaw.replace(/"/g, '')) : minSimilarity;
     const threshold = Number.isFinite(thresholdParsed) ? this.clamp01(thresholdParsed) : minSimilarity;
     if (confidence < threshold) {
-      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Confidence below threshold', { confidence, threshold });
+      this.logger.log('[SOLUTION_UNDERSTOOD] Return null: confidence below threshold', {
+        meetingId: evt.meetingId,
+        participantId: evt.participantId,
+        confidence: Math.round(confidence * 1000) / 1000,
+        threshold,
+      });
       return null;
     }
 
@@ -205,7 +249,16 @@ export class DetectSolutionUnderstood {
     const contextExcerpt = bestContext ? this.snippet(bestContext.text, 180) : '';
     const clientExcerpt = this.snippet(text, 180);
 
-    this.logger.log(`[SOLUTION_UNDERSTOOD] Feedback triggered — confidence: ${(confidence * 100).toFixed(1)}% (similarityRaw), markers: ${markers.join(', ')}`);
+    this.logger.log('[SOLUTION_UNDERSTOOD] Return feedback: triggered', {
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+      confidence: Math.round(confidence * 1000) / 1000,
+      similarityRaw: Math.round(similarityRaw * 1000) / 1000,
+      keywordOverlap,
+      contextEntriesCount: contextEntries.length,
+      markers: markers,
+      textPreview: text.slice(0, 60),
+    });
 
     return {
       id: this.makeId(),
@@ -279,9 +332,9 @@ export class DetectSolutionUnderstood {
   }
 
   /**
-   * Busca textHistory recente de todos os hosts do meeting para comparação semântica.
-   * 
-   * Reutiliza textHistory já mantido em ParticipantState, sem precisar de estado adicional.
+   * Busca textHistory recente dos outros participantes do meeting para comparação semântica.
+   * Não depende de roles (host/guest): usa todos os participantes exceto o atual como contexto.
+   * Em chamada 1:1, o "outro" é quem explicou; o atual é quem reformula (solução compreendida).
    */
   private getHostTextHistoryForComparison(
     meetingId: string,
@@ -304,13 +357,9 @@ export class DetectSolutionUnderstood {
     const participants = ctx.getParticipantsForMeeting(meetingId);
 
     for (const [participantId, state] of participants) {
-      // Não incluir o participante atual
       if (participantId === currentParticipantId) continue;
 
-      // Apenas hosts
-      const role = ctx.getParticipantRole?.(meetingId, participantId);
-      if (role !== 'host') continue;
-
+      // Usar todos os outros participantes como contexto (não exige role host/guest)
       // Extrair textHistory recente
       const textHistory = state.textAnalysis?.textHistory ?? [];
       for (const entry of textHistory) {
