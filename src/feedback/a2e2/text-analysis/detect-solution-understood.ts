@@ -128,7 +128,13 @@ export class DetectSolutionUnderstood {
       return null;
     }
 
-    const contextEntries = this.getLatestEntryPerOtherParticipant(evt.meetingId, evt.participantId, now, ctx);
+    const contextEntries = this.getContextEntriesForComparison(
+      evt.meetingId,
+      evt.participantId,
+      now,
+      ctx,
+      embedding,
+    );
     if (contextEntries.length === 0) {
       if (debug) {
         const participants = ctx.getParticipantsForMeeting?.(evt.meetingId) ?? [];
@@ -228,14 +234,19 @@ export class DetectSolutionUnderstood {
   }
 
   /**
-   * Option B: one entry per other participant — the latest (most recent) entry in the time window with embedding.
-   * Centroid is built from these N embeddings. No role required.
+   * One entry per other participant for building the comparison centroid.
+   * With circular/sliding transcription, textHistory has many overlapping windows per participant.
+   * We need to compare the client's reformulation to the host's solution pitch, not to "any latest"
+   * (e.g. "ok, próximo slide"). So we pick the entry from each other participant that has
+   * maximum cosine similarity to the current (client) embedding — i.e. the host utterance that
+   * best matches what the client is saying (the solution explanation).
    */
-  private getLatestEntryPerOtherParticipant(
+  private getContextEntriesForComparison(
     meetingId: string,
     currentParticipantId: string,
     now: number,
     ctx: DetectionContext,
+    currentEmbedding: number[],
   ): Array<{ participantId: string; text: string; embedding: number[]; ts: number }> {
     const windowMsRaw = process.env.SALES_SOLUTION_CONTEXT_WINDOW_MS;
     const windowMsParsed = windowMsRaw ? Number.parseInt(windowMsRaw.replace(/"/g, ''), 10) : 90_000;
@@ -244,7 +255,7 @@ export class DetectSolutionUnderstood {
 
     const result: Array<{ participantId: string; text: string; embedding: number[]; ts: number }> = [];
 
-    if (!ctx.getParticipantsForMeeting) return result;
+    if (!ctx.getParticipantsForMeeting || currentEmbedding.length === 0) return result;
 
     const participants = ctx.getParticipantsForMeeting(meetingId);
 
@@ -252,24 +263,25 @@ export class DetectSolutionUnderstood {
       if (participantId === currentParticipantId) continue;
 
       const textHistory = state.textAnalysis?.textHistory ?? [];
-      let latest: { text: string; embedding: number[]; ts: number } | null = null;
+      let best: { text: string; embedding: number[]; ts: number; similarity: number } | null = null;
 
       for (const entry of textHistory) {
         if (entry.timestamp < cutoff) continue;
         const text = entry.text?.trim();
         const embedding = entry.embedding;
         if (!text || !embedding || embedding.length === 0) continue;
-        if (!latest || entry.timestamp > latest.ts) {
-          latest = { text, embedding, ts: entry.timestamp };
+        const sim = cosineSimilarity(currentEmbedding, embedding);
+        if (!best || sim > best.similarity) {
+          best = { text, embedding, ts: entry.timestamp, similarity: sim };
         }
       }
 
-      if (latest) {
+      if (best) {
         result.push({
           participantId,
-          text: latest.text,
-          embedding: latest.embedding,
-          ts: latest.ts,
+          text: best.text,
+          embedding: best.embedding,
+          ts: best.ts,
         });
       }
     }
