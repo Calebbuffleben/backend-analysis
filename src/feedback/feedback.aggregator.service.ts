@@ -12,6 +12,7 @@ import { FeedbackParticipantStateService } from './feedback-participant-state.se
 import { computeWindow, pruneOldSamples, updateEma, updateSpeakerTracking } from './helpers';
 import { makeFeedbackId } from './utils/id';
 import { textSimilar } from './utils/text-similarity';
+import { normalizeEmbedding } from './utils/embedding';
 
 /**
  * Thresholds usados pelo agregador (janela curta para speaker tracking, prune e EMA).
@@ -189,7 +190,14 @@ export class FeedbackAggregatorService {
     // - Detecção de consistência ao longo do tempo
     // ========================================================================
     const maxHistorySize = 20;
-    
+
+    // Normalize embedding: Python sends list of floats; if we get a scalar (e.g. 0.7 or 0) we identify and skip
+    const normalizedEmbedding = normalizeEmbedding(evt.analysis.embedding, {
+      logger: this.logger,
+      meetingId: evt.meetingId,
+      participantId: evt.participantId,
+    });
+
     // Criar entrada no histórico
     const historyEntry: TextHistoryEntry = {
       text: evt.text,
@@ -199,7 +207,7 @@ export class FeedbackAggregatorService {
       sales_category_confidence: evt.analysis.sales_category_confidence ?? null,
       sales_category_intensity: evt.analysis.sales_category_intensity ?? null,
       sales_category_ambiguity: evt.analysis.sales_category_ambiguity ?? null,
-      embedding: evt.analysis.embedding ?? undefined,
+      embedding: normalizedEmbedding ?? undefined,
       keywords: evt.analysis.keywords ?? undefined,
     };
     
@@ -243,7 +251,7 @@ export class FeedbackAggregatorService {
       sentiment_label: evt.analysis.sentiment,
       sentiment_score: evt.analysis.sentiment_score,
       urgency: evt.analysis.urgency,
-      embedding: evt.analysis.embedding,
+      embedding: normalizedEmbedding,
       // Categorias de vendas classificadas com SBERT
       // Estes campos são opcionais e podem ser null se SBERT não estiver configurado
       // ou se nenhuma categoria foi detectada com confiança suficiente
