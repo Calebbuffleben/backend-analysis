@@ -88,15 +88,24 @@ export class DetectSolutionUnderstood {
       });
     }
 
-    if (!text || !Array.isArray(embedding) || embedding.length === 0) return null;
+    if (!text || !Array.isArray(embedding) || embedding.length === 0) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: missing text or empty embedding');
+      return null;
+    }
 
     const role = ctx.getParticipantRole?.(evt.meetingId, evt.participantId);
-    if (role === 'host') return null;
+    if (role === 'host') {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: participant is host (only client can trigger)');
+      return null;
+    }
 
     const cooldownRaw = process.env.SALES_SOLUTION_UNDERSTOOD_COOLDOWN_MS;
     const cooldownParsed = cooldownRaw ? Number.parseInt(cooldownRaw.replace(/"/g, ''), 10) : 120000;
     const effectiveCooldownMs = Number.isFinite(cooldownParsed) ? Math.max(0, cooldownParsed) : 120000;
-    if (effectiveCooldownMs > 0 && this.inCooldown(state, 'sales_solution_understood', Date.now())) return null;
+    if (effectiveCooldownMs > 0 && this.inCooldown(state, 'sales_solution_understood', Date.now())) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: in cooldown');
+      return null;
+    }
 
     const timeSinceLast = typeof state.lastFeedbackTextAt === 'number' ? now - state.lastFeedbackTextAt : Infinity;
     if (
@@ -104,25 +113,53 @@ export class DetectSolutionUnderstood {
       state.lastFeedbackText &&
       textSimilar(state.lastFeedbackText, evt.text ?? '', 0.6)
     ) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: same-segment suppression (similar to last feedback text)');
       return null;
     }
 
     const markers = this.detectReformulationMarkers(text);
-    if (markers.length === 0) return null;
+    if (markers.length === 0) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: no reformulation marker in text', { textExcerpt: text.slice(0, 80) });
+      return null;
+    }
 
-    if (text.length < MIN_CHARS_HARDCODED) return null;
+    if (text.length < MIN_CHARS_HARDCODED) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: text shorter than MIN_CHARS', { len: text.length, min: MIN_CHARS_HARDCODED });
+      return null;
+    }
 
     const contextEntries = this.getLatestEntryPerOtherParticipant(evt.meetingId, evt.participantId, now, ctx);
-    if (contextEntries.length === 0) return null;
+    if (contextEntries.length === 0) {
+      if (debug) {
+        const participants = ctx.getParticipantsForMeeting?.(evt.meetingId) ?? [];
+        const otherCount = participants.filter(([pid]) => pid !== evt.participantId).length;
+        const withHistory = participants.filter(([, s]) => (s.textAnalysis?.textHistory?.length ?? 0) > 0).length;
+        this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: no context from other participants', {
+          otherParticipantsCount: otherCount,
+          participantsWithTextHistory: withHistory,
+          hint: 'Need at least one other participant with textHistory entries (with embedding) in the context window.',
+        });
+      }
+      return null;
+    }
 
     const centroid = this.meanEmbedding(contextEntries.map((e) => e.embedding));
-    if (!centroid) return null;
+    if (!centroid) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: centroid computation failed');
+      return null;
+    }
 
     const similarityRaw = cosineSimilarity(embedding, centroid);
-    const minSimRaw = process.env.SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY;
-    const minSimParsed = minSimRaw ? Number.parseFloat(minSimRaw.replace(/"/g, '')) : DEFAULT_MIN_SIMILARITY;
+    const minSimRaw = process.env.SALES_SOLUTION_UNDERSTOOD_MIN_SIMILARITY ?? process.env.SALES_SOLUTION_UNDERSTOOD_THRESHOLD;
+    const minSimParsed = minSimRaw ? Number.parseFloat(String(minSimRaw).replace(/"/g, '')) : DEFAULT_MIN_SIMILARITY;
     const minSimilarity = Number.isFinite(minSimParsed) ? Math.max(0, Math.min(1, minSimParsed)) : DEFAULT_MIN_SIMILARITY;
-    if (similarityRaw < minSimilarity) return null;
+    if (similarityRaw < minSimilarity) {
+      if (debug) this.logger.debug('[SOLUTION_UNDERSTOOD] Skip: similarity below threshold', {
+        similarityRaw: Math.round(similarityRaw * 1000) / 1000,
+        minSimilarity,
+      });
+      return null;
+    }
 
     const confidence = similarityRaw;
     if (effectiveCooldownMs > 0) {
