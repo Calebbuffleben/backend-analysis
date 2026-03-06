@@ -103,6 +103,18 @@ Regra única: marcador de reformulação + similaridade (embedding atual vs. cen
 ### Detecção: Indecisão do cliente (`sales_client_indecision`)
 
 - **`SALES_CLIENT_INDECISION_COOLDOWN_MS`**: ms (default: `120000`). Intervalo mínimo entre dois feedbacks de indecisão para o mesmo participante. **`0` desativa o cooldown** — não recomendado em produção (pode gerar disparos em “qualquer fala” após o primeiro feedback).
+
+### Detecção: Dominância de conversa (`conversation_dominance`)
+
+Todos os parâmetros têm valores **pré-definidos em código** (`a2e2/thresholds/conversation-dominance.ts`); o feedback não depende de variáveis de ambiente. As ENV abaixo são **opcionais** (override dos defaults). O detector não usa papel (host/guest): dispara quando **um participante** fala a maior parte do tempo na janela.
+
+- **`CONVERSATION_DOMINANCE_ENABLED`**: `true|false` (default em código: `true`) — habilita o detector.
+- **`CONVERSATION_DOMINANCE_WINDOW_MS`**: ms (default: `120000`) — janela para agregar tempo de fala.
+- **`CONVERSATION_DOMINANCE_MIN_TOTAL_MS`**: ms (default: `30000`) — tempo total mínimo na janela.
+- **`CONVERSATION_DOMINANCE_RATIO_THRESHOLD`**: 0..1 (default: `0.75`) — dispara se tempo do participante dominante/total ≥ este valor.
+- **`CONVERSATION_DOMINANCE_SEGMENT_DURATION_MS`**: ms (default: `7000`) — estimativa por segmento do histórico de texto.
+- **`CONVERSATION_DOMINANCE_COOLDOWN_MS`**: ms (default: `120000`) — cooldown por reunião após disparo.
+
 ## Executando a aplicação
 
 ### Desenvolvimento
@@ -380,8 +392,9 @@ O backend gera feedbacks para o anfitrião com base no áudio dos participantes 
 ```
 
 ### Identidade/Papel
-- O frontend deve emitir token com `metadata` do LiveKit contendo `{"roles":["host"],"name":"<Nome>"}` para o anfitrião.
-- O backend identifica múltiplos anfitriões e não gera feedback sobre o próprio anfitrião.
+
+- O fluxo é **Google Meet + extensão Chrome → WebSocket `/egress-audio` → backend**. O backend recebe `meetingId` e `participantId` pela query; a extensão **não envia role (host/guest)**. O índice de roles não é preenchido nesse fluxo, portanto todos os participantes ficam com role **`unknown`**.
+- O feedback **"dominância de conversa"** (`conversation_dominance`) **não depende de role**: dispara quando um participante (qualquer um) fala a maior parte do tempo na janela. Detalhes: `apps/specs/analysis/conversation-dominance-flow.md`.
 
 ### Endpoints de Observabilidade
 - `GET /feedback/debug/:meetingId` — visão instantânea por participante (cobertura de fala 10s, RMS médio 3s, EMA de RMS)
