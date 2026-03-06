@@ -65,7 +65,8 @@ export interface FeedbackEventPayload {
     | 'tristeza'
     | 'estado_mental'
     | 'sales_client_indecision'
-    | 'sales_solution_understood';
+    | 'sales_solution_understood'
+    | 'sales_seller_talking_too_much';
   severity: FeedbackSeverity;
   ts: number;
   meetingId: string;
@@ -140,6 +141,11 @@ export interface FeedbackEventPayload {
     keyword_overlap?: number;
     solution_context_excerpt?: string;
     client_reformulation_excerpt?: string;
+    // Campos específicos para "vendedor falando demais"
+    seller_time_ms?: number;
+    client_time_ms?: number;
+    total_ms?: number;
+    ratio?: number;
   };
 }
 
